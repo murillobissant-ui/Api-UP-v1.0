@@ -453,6 +453,92 @@ app.delete("/logs", auth, (req, res) => {
   res.json({ ok: true });
 });
 
+
+app.get("/backup/export", auth, (req, res) => {
+  if (req.user.role !== "adm") return res.status(403).json({ error: "Apenas Admin pode exportar dados." });
+
+  res.json({
+    exportedAt: nowIso(),
+    source: "upsystem-api",
+    version: "1.1.0",
+    users: req.db.users || [],
+    activationKeys: req.db.activationKeys || [],
+    sites: req.db.sites || [],
+    meta: {
+      totalUsers: (req.db.users || []).length,
+      totalKeys: (req.db.activationKeys || []).length
+    }
+  });
+});
+
+app.post("/backup/import", auth, (req, res) => {
+  if (req.user.role !== "adm") return res.status(403).json({ error: "Apenas Admin pode importar dados." });
+
+  const incomingUsers = Array.isArray(req.body.users) ? req.body.users : [];
+  const incomingKeys = Array.isArray(req.body.activationKeys) ? req.body.activationKeys : Array.isArray(req.body.keys) ? req.body.keys : [];
+  const incomingSites = Array.isArray(req.body.sites) ? req.body.sites : [];
+
+  let importedUsers = 0;
+  let importedKeys = 0;
+  let importedSites = 0;
+
+  const currentAdminId = req.user.id;
+  const usersByKey = new Map();
+
+  for (const existing of req.db.users || []) {
+    usersByKey.set(existing.id || existing.username, existing);
+  }
+
+  for (const imported of incomingUsers) {
+    if (!imported || !imported.username) continue;
+
+    const importedIsCurrentAdmin =
+      imported.id === currentAdminId ||
+      imported.username === req.user.username ||
+      imported.id === "admin-root";
+
+    if (importedIsCurrentAdmin) {
+      continue;
+    }
+
+    usersByKey.set(imported.id || imported.username, {
+      ...imported,
+      updatedAt: nowIso()
+    });
+    importedUsers++;
+  }
+
+  const keysByCode = new Map((req.db.activationKeys || []).map((key) => [key.code, key]));
+  for (const key of incomingKeys) {
+    if (!key || !key.code) continue;
+    keysByCode.set(key.code, key);
+    importedKeys++;
+  }
+
+  const sitesById = new Map((req.db.sites || []).map((site) => [site.id, site]));
+  for (const site of incomingSites) {
+    if (!site || !site.id) continue;
+    sitesById.set(site.id, site);
+    importedSites++;
+  }
+
+  req.db.users = Array.from(usersByKey.values());
+  req.db.activationKeys = Array.from(keysByCode.values());
+  if (incomingSites.length) req.db.sites = Array.from(sitesById.values());
+
+  writeDb(req.db);
+
+  res.json({
+    ok: true,
+    importedUsers,
+    importedKeys,
+    importedSites,
+    totalUsers: req.db.users.length,
+    totalKeys: req.db.activationKeys.length
+  });
+});
+
+
 app.use((err, req, res, next) => {
   console.error(err);
   res.status(err.status || 500).json({ error: err.message || "Erro interno." });
