@@ -250,10 +250,47 @@ async function redeemKeyForUser(db, key, user, passwordHash = null, name = null,
   return user;
 }
 
+
+function compareVersion(a = "0.0.0", b = "0.0.0") {
+  const pa = String(a).split(".").map((n) => Number(n) || 0);
+  const pb = String(b).split(".").map((n) => Number(n) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const da = pa[i] || 0;
+    const db = pb[i] || 0;
+    if (da > db) return 1;
+    if (da < db) return -1;
+  }
+  return 0;
+}
+
+function clientSecurity(req, res, next) {
+  res.setHeader("X-UpSystem-API", "1.3.9");
+
+  if (req.method === "OPTIONS" || req.path === "/health") {
+    return next();
+  }
+
+  const minVersion = String(process.env.MIN_EXTENSION_VERSION || "").trim();
+  const clientVersion = String(req.get("X-UpSystem-Version") || "").trim();
+
+  if (minVersion && (!clientVersion || compareVersion(clientVersion, minVersion) < 0)) {
+    return res.status(426).json({
+      error: `Extensão desatualizada. Versão mínima exigida: ${minVersion}.`,
+      code: "EXTENSION_OUTDATED",
+      minVersion
+    });
+  }
+
+  next();
+}
+
+
+app.use(clientSecurity);
+
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.2.7", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.3.9", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -665,7 +702,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.2.7",
+    version: "1.3.9",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
