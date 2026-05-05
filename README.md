@@ -1,17 +1,29 @@
-# UpSysteM API v1.2.0 — PostgreSQL/Supabase
+# UpSysteM API v1.4.0 — PostgreSQL/Supabase
 
-Esta API usa PostgreSQL via `DATABASE_URL`.
+Esta API usa PostgreSQL/Supabase via `DATABASE_URL` e centraliza a validação da extensão, usuários, keys, sites e logs.
 
 ## Variáveis no Render
 
 ```txt
 PORT=10000
-JWT_SECRET=upsystem_btt7jvdsfJmt2rB9uOYOf3D7gyElqcO-_jg1FSYxN4sunys2w1s9bc2lgIm_YPdAStausWDi
+JWT_SECRET=troque-por-uma-chave-grande-e-secreta
 ADMIN_USERNAME=admiro
-ADMIN_PASSWORD=P4bl0_mur1l0
+ADMIN_PASSWORD=troque-essa-senha
 CORS_ORIGIN=*
 DATABASE_URL=postgresql://postgres.SEUPROJETO:SUA_SENHA@aws-1-us-west-2.pooler.supabase.com:6543/postgres
+MIN_EXTENSION_VERSION=1.4.0
+MAX_LOGS=500
+LOG_RETENTION_DAYS=7
 ```
+
+## Logs
+
+A partir da v1.4.0, a API mantém as logs sob duas regras simultâneas:
+
+- no máximo `MAX_LOGS` registros, padrão `500`;
+- retenção máxima de `LOG_RETENTION_DAYS` dias, padrão `7`.
+
+Quando novas logs são gravadas, a API remove automaticamente as logs antigas e mantém apenas as mais recentes dentro desses limites.
 
 `DATA_FILE` não é mais usado nesta versão.
 
@@ -28,22 +40,13 @@ Start Command: npm start
 /health
 ```
 
-Deve retornar:
+Deve retornar algo semelhante a:
 
 ```json
 {
   "ok": true,
   "service": "UpSysteM API",
-  "version": "1.2.0",
+  "version": "1.4.0",
   "database": "postgresql"
 }
 ```
-
-## Migração
-
-1. Na versão antiga, exporte o TXT em Console > Exportação.
-2. Suba esta API v1.2.0 no Render.
-3. Configure `DATABASE_URL`.
-4. Faça deploy.
-5. Instale/abra a extensão.
-6. Importe o TXT em Console > Exportação.

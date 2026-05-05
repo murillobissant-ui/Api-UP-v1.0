@@ -3,6 +3,8 @@ const bcrypt = require("bcryptjs");
 const { v4: uuid } = require("uuid");
 
 const DATABASE_URL = process.env.DATABASE_URL;
+const MAX_LOGS = parsePositiveInt(process.env.MAX_LOGS, 500);
+const LOG_RETENTION_DAYS = parsePositiveInt(process.env.LOG_RETENTION_DAYS, 7);
 
 let pool = null;
 let initialized = false;
@@ -20,6 +22,11 @@ function getPool() {
   }
 
   return pool;
+}
+
+function parsePositiveInt(value, fallback) {
+  const number = Number.parseInt(value, 10);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
 }
 
 function nowIso() {
@@ -125,6 +132,11 @@ async function ensureSchema() {
     )
   `);
 
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_upsystem_logs_created_at
+    ON upsystem_logs (created_at DESC)
+  `);
+
   await ensureInitialData();
   initialized = true;
 }
@@ -180,6 +192,27 @@ function rowData(row) {
   return row?.data || {};
 }
 
+async function cleanupLogs(client) {
+  if (LOG_RETENTION_DAYS > 0) {
+    await client.query(
+      "DELETE FROM upsystem_logs WHERE created_at < NOW() - ($1::int * INTERVAL '1 day')",
+      [LOG_RETENTION_DAYS]
+    );
+  }
+
+  await client.query(
+    `DELETE FROM upsystem_logs
+     WHERE id IN (
+       SELECT id FROM (
+         SELECT id, ROW_NUMBER() OVER (ORDER BY created_at DESC) AS rn
+         FROM upsystem_logs
+       ) ranked
+       WHERE ranked.rn > $1
+     )`,
+    [MAX_LOGS]
+  );
+}
+
 async function readDb() {
   await ensureSchema();
   const db = getPool();
@@ -188,14 +221,20 @@ async function readDb() {
     db.query("SELECT data FROM upsystem_users ORDER BY updated_at ASC"),
     db.query("SELECT data FROM upsystem_activation_keys ORDER BY updated_at ASC"),
     db.query("SELECT data FROM upsystem_sites ORDER BY id ASC"),
-    db.query("SELECT data FROM upsystem_logs ORDER BY created_at ASC LIMIT 5000")
+    db.query(
+      `SELECT data FROM upsystem_logs
+       WHERE created_at >= NOW() - ($2::int * INTERVAL '1 day')
+       ORDER BY created_at DESC
+       LIMIT $1`,
+      [MAX_LOGS, LOG_RETENTION_DAYS]
+    )
   ]);
 
   return {
     users: users.rows.map(rowData),
     activationKeys: keys.rows.map(rowData),
     sites: sites.rows.map(rowData),
-    logs: logs.rows.map(rowData)
+    logs: logs.rows.map(rowData).reverse()
   };
 }
 
@@ -257,6 +296,8 @@ async function writeDb(state) {
         [log.id, JSON.stringify(log), log.createdAt || log.at || null]
       );
     }
+
+    await cleanupLogs(client);
 
     await client.query("COMMIT");
   } catch (error) {

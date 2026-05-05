@@ -24,6 +24,9 @@ const app = express();
 const PORT = Number(process.env.PORT || 10000);
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
+const MAX_LOGS = Math.max(1, Number.parseInt(process.env.MAX_LOGS || "500", 10) || 500);
+const LOG_RETENTION_DAYS = Math.max(1, Number.parseInt(process.env.LOG_RETENTION_DAYS || "7", 10) || 7);
+const LOG_RETENTION_MS = LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
 app.use(cors({ origin: CORS_ORIGIN === "*" ? true : CORS_ORIGIN, credentials: true }));
 app.use(express.json({ limit: "1mb" }));
@@ -264,7 +267,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.3.9");
+  res.setHeader("X-UpSystem-API", "1.4.0");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -290,7 +293,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.3.9", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.4.0", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -673,15 +676,18 @@ app.post("/logs", auth, (req, res) => {
     createdAt: nowIso()
   };
 
+  const retentionCutoff = Date.now() - LOG_RETENTION_MS;
   req.db.logs.push(log);
-  req.db.logs = req.db.logs.slice(-5000);
+  req.db.logs = req.db.logs
+    .filter((item) => new Date(item.createdAt || item.at || 0).getTime() >= retentionCutoff)
+    .slice(-MAX_LOGS);
   writeDb(req.db);
   res.json({ log });
 });
 
 app.get("/logs", auth, (req, res) => {
   const validLogs = (req.db.logs || []).filter((log) => log.username && log.username !== "sem-usuario");
-  if (req.user.role === "adm") return res.json({ logs: validLogs.slice(-1000) });
+  if (req.user.role === "adm") return res.json({ logs: validLogs.slice(-MAX_LOGS) });
   res.json({ logs: validLogs.filter((l) => l.username === req.user.username).slice(-500) });
 });
 
@@ -702,7 +708,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.3.9",
+    version: "1.4.0",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
