@@ -93,6 +93,72 @@ function normalizeAccess(accessType) {
   return ["weekly", "monthly", "lifetime"].includes(accessType) ? accessType : "weekly";
 }
 
+function normalizeDevice(device = {}) {
+  const installId = String(device.installId || device.deviceId || "").trim();
+  const computerId = String(device.computerId || device.deviceId || "").trim();
+
+  if (!computerId) return null;
+
+  return {
+    installId,
+    deviceId: installId,
+    computerId,
+    deviceName: String(device.deviceName || "").slice(0, 180),
+    computerName: String(device.computerName || device.deviceName || "").slice(0, 180),
+    platform: String(device.platform || "").slice(0, 80),
+    browser: String(device.browser || "").slice(0, 80),
+    screen: String(device.screen || "").slice(0, 60),
+    timezone: String(device.timezone || "").slice(0, 100),
+    userAgent: String(device.userAgent || "").slice(0, 240)
+  };
+}
+
+function assertDeviceAllowed(user, device, allowBind = true) {
+  const normalized = normalizeDevice(device);
+
+  if (!normalized?.computerId) {
+    const err = new Error("Computador não identificado. Reinstale/atualize a extensão.");
+    err.status = 403;
+    throw err;
+  }
+
+  if (user.role === "adm") return normalized;
+
+  const boundComputer = user.computerId || user.deviceId;
+
+  if (!boundComputer && allowBind) {
+    user.computerId = normalized.computerId;
+    user.computerName = normalized.computerName;
+    user.computerPlatform = normalized.platform;
+    user.computerScreen = normalized.screen;
+    user.computerTimezone = normalized.timezone;
+    user.computerBoundAt = nowIso();
+
+    user.deviceId = normalized.installId || normalized.computerId;
+    user.deviceName = normalized.deviceName;
+    user.devicePlatform = normalized.platform;
+    user.deviceUserAgent = normalized.userAgent;
+    user.deviceBoundAt = user.deviceBoundAt || nowIso();
+
+    user.lastBrowser = normalized.browser;
+    user.lastDeviceId = normalized.installId || null;
+
+    return normalized;
+  }
+
+  if (boundComputer && boundComputer !== normalized.computerId) {
+    const err = new Error("Conta vinculada a outro computador. Solicite ao Admin a liberação do computador.");
+    err.status = 403;
+    throw err;
+  }
+
+  user.lastBrowser = normalized.browser;
+  user.lastDeviceId = normalized.installId || null;
+  user.lastComputerId = normalized.computerId;
+
+  return normalized;
+}
+
 function validateKey(key) {
   if (!key) {
     const err = new Error("Key inválida.");
@@ -131,7 +197,7 @@ function validateKey(key) {
   }
 }
 
-async function redeemKeyForUser(db, key, user, passwordHash = null, name = null) {
+async function redeemKeyForUser(db, key, user, passwordHash = null, name = null, device = null) {
   const oldKey = user.activeKey || user.createdByKey || null;
   const now = nowIso();
 
@@ -142,6 +208,23 @@ async function redeemKeyForUser(db, key, user, passwordHash = null, name = null)
       old.replacedAt = now;
       old.replacedByKey = key.code;
     }
+  }
+
+  const normalizedDevice = normalizeDevice(device);
+  if (normalizedDevice) {
+    user.computerId = normalizedDevice.computerId;
+    user.computerName = normalizedDevice.computerName;
+    user.computerPlatform = normalizedDevice.platform;
+    user.computerScreen = normalizedDevice.screen;
+    user.computerTimezone = normalizedDevice.timezone;
+    user.computerBoundAt = user.computerBoundAt || now;
+
+    user.deviceId = normalizedDevice.installId || normalizedDevice.computerId;
+    user.deviceName = normalizedDevice.deviceName;
+    user.devicePlatform = normalizedDevice.platform;
+    user.deviceUserAgent = normalizedDevice.userAgent;
+    user.deviceBoundAt = user.deviceBoundAt || now;
+    user.lastBrowser = normalizedDevice.browser;
   }
 
   user.name = name || user.name;
@@ -170,7 +253,7 @@ async function redeemKeyForUser(db, key, user, passwordHash = null, name = null)
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.2.0", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.2.3", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -195,6 +278,12 @@ app.post("/auth/login", async (req, res, next) => {
 
     const ok = await bcrypt.compare(String(req.body.password || ""), user.passwordHash);
     if (!ok) return res.status(401).json({ error: "Usuário ou senha incorretos." });
+
+    const device = assertDeviceAllowed(user, req.body.device, true);
+    user.lastLoginAt = nowIso();
+    user.lastDeviceId = device.deviceId;
+    user.updatedAt = nowIso();
+    writeDb(db);
 
     res.json({ token: sign(user), user: publicUser(user) });
   } catch (e) {
@@ -228,8 +317,11 @@ app.post("/auth/register-key", async (req, res, next) => {
 
     let user;
     if (existing) {
-      user = await redeemKeyForUser(db, key, existing, passwordHash, name);
+      user = await redeemKeyForUser(db, key, existing, passwordHash, name, req.body.device);
     } else {
+      const normalizedDevice = normalizeDevice(req.body.device);
+      if (!normalizedDevice?.deviceId) return res.status(400).json({ error: "Dispositivo não identificado. Atualize a extensão." });
+
       user = {
         id: makeId("user"),
         name,
@@ -247,6 +339,18 @@ app.post("/auth/register-key", async (req, res, next) => {
         createdByKey: key.code,
         activeKey: key.code,
         keyHistory: [key.code],
+        computerId: normalizedDevice.computerId,
+        computerName: normalizedDevice.computerName,
+        computerPlatform: normalizedDevice.platform,
+        computerScreen: normalizedDevice.screen,
+        computerTimezone: normalizedDevice.timezone,
+        computerBoundAt: nowIso(),
+        deviceId: normalizedDevice.installId || normalizedDevice.computerId,
+        deviceName: normalizedDevice.deviceName,
+        devicePlatform: normalizedDevice.platform,
+        deviceUserAgent: normalizedDevice.userAgent,
+        deviceBoundAt: nowIso(),
+        lastBrowser: normalizedDevice.browser,
         createdAt: nowIso(),
         updatedAt: nowIso()
       };
@@ -280,7 +384,8 @@ app.post("/auth/renew-key", async (req, res, next) => {
     const key = db.activationKeys.find((k) => k.code === code);
     validateKey(key);
 
-    const updated = await redeemKeyForUser(db, key, user);
+    assertDeviceAllowed(user, req.body.device, true);
+    const updated = await redeemKeyForUser(db, key, user, null, null, req.body.device);
     res.json({ user: publicUser(updated) });
   } catch (e) {
     next(e);
@@ -327,6 +432,9 @@ app.post("/users", auth, requirePermission("user_create"), async (req, res, next
     } else {
       if (!req.body.password) return res.status(400).json({ error: "Informe uma senha inicial." });
 
+      const normalizedDevice = normalizeDevice(req.body.device);
+      if (!normalizedDevice?.deviceId) return res.status(400).json({ error: "Dispositivo não identificado. Atualize a extensão." });
+
       user = {
         id: makeId("user"),
         name: req.body.name,
@@ -354,6 +462,36 @@ app.post("/users", auth, requirePermission("user_create"), async (req, res, next
   } catch (e) {
     next(e);
   }
+});
+
+app.delete("/users/:id/device", auth, (req, res) => {
+  if (req.user.role !== "adm") return res.status(403).json({ error: "Apenas Admin pode liberar computador." });
+
+  const target = req.db.users.find((u) => u.id === req.params.id || u.username === req.params.id);
+  if (!target) return res.status(404).json({ error: "Usuário não encontrado." });
+
+  if (target.role === "adm" || target.id === req.user.id) {
+    return res.status(403).json({ error: "Não é possível liberar o computador deste Administrador." });
+  }
+
+  target.computerId = null;
+  target.computerName = null;
+  target.computerPlatform = null;
+  target.computerScreen = null;
+  target.computerTimezone = null;
+  target.computerBoundAt = null;
+  target.deviceId = null;
+  target.deviceName = null;
+  target.devicePlatform = null;
+  target.deviceUserAgent = null;
+  target.deviceBoundAt = null;
+  target.lastBrowser = null;
+  target.lastDeviceId = null;
+  target.lastComputerId = null;
+  target.updatedAt = nowIso();
+
+  writeDb(req.db);
+  res.json({ user: publicUser(target) });
 });
 
 app.delete("/users/:id", auth, requirePermission("user_delete"), (req, res) => {
@@ -429,6 +567,15 @@ app.post("/keys", auth, requirePermission("user_create"), (req, res, next) => {
     const db = req.db;
     const current = req.user;
 
+    const customerFirstName = String(req.body.customerFirstName || "").trim();
+    const customerLastName = String(req.body.customerLastName || "").trim();
+    const customerEmail = String(req.body.customerEmail || "").trim();
+
+    if (!customerFirstName) return res.status(400).json({ error: "Informe o nome do cliente antes de gerar a key." });
+    if (!customerLastName) return res.status(400).json({ error: "Informe o sobrenome do cliente antes de gerar a key." });
+    if (!customerEmail) return res.status(400).json({ error: "Informe o e-mail do cliente antes de gerar a key." });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail)) return res.status(400).json({ error: "Informe um e-mail válido." });
+
     if (current.role === "parceiro") assertPartnerLimit(db, current, true);
 
     const role = current.role === "adm" ? normalizeRole(req.body.role) : "usuario";
@@ -447,9 +594,9 @@ app.post("/keys", auth, requirePermission("user_create"), (req, res, next) => {
       accessType,
       permissions: defaultPermissions(role),
       note: String(req.body.note || "").slice(0, 120),
-      customerFirstName: String(req.body.customerFirstName || "").trim().slice(0, 80),
-      customerLastName: String(req.body.customerLastName || "").trim().slice(0, 80),
-      customerEmail: String(req.body.customerEmail || "").trim().slice(0, 120),
+      customerFirstName: customerFirstName.slice(0, 80),
+      customerLastName: customerLastName.slice(0, 80),
+      customerEmail: customerEmail.slice(0, 120),
       createdBy: current.username,
       createdByRole: current.role,
       status: "available",
@@ -518,7 +665,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.2.0",
+    version: "1.2.3",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
