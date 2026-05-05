@@ -1,59 +1,49 @@
-# UpSysteM API Online v4.2
+# UpSysteM API v1.2.0 — PostgreSQL/Supabase
 
-API online para centralizar usuários, keys, planos, permissões, parceiros, limites, sites e logs da extensão UpSysteM.
+Esta API usa PostgreSQL via `DATABASE_URL`.
 
-## Rodar local
-
-```bash
-cd upsystem-api
-npm install
-cp .env.example .env
-npm start
-```
-
-A API ficará em:
+## Variáveis no Render
 
 ```txt
-http://localhost:10000
-```
-
-## Deploy no Render
-
-1. Crie um novo Web Service no Render.
-2. Suba esta pasta `upsystem-api` para um repositório GitHub.
-3. Configure:
-   - Build Command: `npm install`
-   - Start Command: `npm start`
-4. Configure as variáveis de ambiente:
-   - `PORT=10000`
-   - `JWT_SECRET=upsystem_btt7jvdsfJmt2rB9uOYOf3D7gyElqcO-_jg1FSYxN4sunys2w1s9bc2lgIm_YPdAStausWDi
-   - `ADMIN_USERNAME=admiro`
-   - `ADMIN_PASSWORD=P4bl0_mur1l0`
-   - `CORS_ORIGIN=*`
-   - `DATA_FILE=./data/db.json`
-
-## Observação
-
-Esta primeira versão online usa arquivo JSON como banco inicial para facilitar o deploy e os testes.
-Para produção com muitos clientes, o ideal é migrar para PostgreSQL/Supabase.
-
-
-## Admin padrão deste pacote
-
-```txt
+PORT=10000
+JWT_SECRET=upsystem_btt7jvdsfJmt2rB9uOYOf3D7gyElqcO-_jg1FSYxN4sunys2w1s9bc2lgIm_YPdAStausWDi
 ADMIN_USERNAME=admiro
 ADMIN_PASSWORD=P4bl0_mur1l0
+CORS_ORIGIN=*
+DATABASE_URL=postgresql://postgres.SEUPROJETO:SUA_SENHA@aws-1-us-west-2.pooler.supabase.com:6543/postgres
 ```
 
-Se o banco antigo já tiver sido criado, altere também o `DATA_FILE`, por exemplo:
+`DATA_FILE` não é mais usado nesta versão.
+
+## Comandos Render
 
 ```txt
-DATA_FILE=./data/db-v4.json
+Build Command: npm install
+Start Command: npm start
 ```
 
-
-## JWT_SECRET gerada para este pacote
+## Health check
 
 ```txt
-JWT_SECRET=upsystem_btt7jvdsfJmt2rB9uOYOf3D7gyElqcO-_jg1FSYxN4sunys2w1s9bc2lgIm_YPdAStausWDi
+/health
 ```
+
+Deve retornar:
+
+```json
+{
+  "ok": true,
+  "service": "UpSysteM API",
+  "version": "1.2.0",
+  "database": "postgresql"
+}
+```
+
+## Migração
+
+1. Na versão antiga, exporte o TXT em Console > Exportação.
+2. Suba esta API v1.2.0 no Render.
+3. Configure `DATABASE_URL`.
+4. Faça deploy.
+5. Instale/abra a extensão.
+6. Importe o TXT em Console > Exportação.

@@ -16,7 +16,8 @@ const {
   nowIso,
   bcrypt,
   normalizeLimit,
-  assertPartnerLimit
+  assertPartnerLimit,
+  healthDb
 } = require("./storage");
 
 const app = express();
@@ -111,6 +112,18 @@ function validateKey(key) {
     throw err;
   }
 
+  if (key.status === "revoked") {
+    const err = new Error("Esta key foi revogada pelo administrador.");
+    err.status = 400;
+    throw err;
+  }
+
+  if (key.status === "cancelled") {
+    const err = new Error("Esta key foi cancelada pelo administrador.");
+    err.status = 400;
+    throw err;
+  }
+
   if (key.keyExpiresAt && new Date(key.keyExpiresAt).getTime() < Date.now()) {
     const err = new Error("Key expirada. Solicite uma nova key ao administrador.");
     err.status = 400;
@@ -154,8 +167,13 @@ async function redeemKeyForUser(db, key, user, passwordHash = null, name = null)
   return user;
 }
 
-app.get("/health", (req, res) => {
-  res.json({ ok: true, service: "UpSysteM API", version: "4.2.0" });
+app.get("/health", async (req, res, next) => {
+  try {
+    await healthDb();
+    res.json({ ok: true, service: "UpSysteM API", version: "1.2.0", database: "postgresql" });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.post("/auth/login", async (req, res, next) => {
@@ -359,12 +377,52 @@ app.get("/keys", auth, (req, res) => {
     const expired = key.keyExpiresAt && new Date(key.keyExpiresAt).getTime() < Date.now();
     return {
       ...key,
-      status: key.status === "used" ? "used" : key.status === "replaced" ? "replaced" : expired ? "expired" : "available"
+      status: key.status === "used"
+        ? "used"
+        : key.status === "replaced"
+          ? "replaced"
+          : key.status === "revoked"
+            ? "revoked"
+            : key.status === "cancelled"
+              ? "cancelled"
+              : expired
+                ? "expired"
+                : "available"
     };
   });
 
   res.json({ keys });
 });
+
+
+app.patch("/keys/:id/status", auth, (req, res) => {
+  if (req.user.role !== "adm") return res.status(403).json({ error: "Apenas Admin pode alterar status de keys." });
+
+  const action = String(req.body.action || "").trim();
+  const allowed = new Set(["revoked", "cancelled", "available"]);
+
+  if (!allowed.has(action)) {
+    return res.status(400).json({ error: "Ação inválida para key." });
+  }
+
+  const key = (req.db.activationKeys || []).find((item) => item.id === req.params.id || item.code === req.params.id);
+
+  if (!key) return res.status(404).json({ error: "Key não encontrada." });
+
+  if (key.status === "used" || key.status === "replaced") {
+    return res.status(400).json({ error: "Não é possível alterar uma key já resgatada/substituída." });
+  }
+
+  key.status = action;
+  key.statusUpdatedAt = nowIso();
+  key.statusUpdatedBy = req.user.username;
+  key.statusNote = String(req.body.note || "").slice(0, 180);
+
+  writeDb(req.db);
+
+  res.json({ key });
+});
+
 
 app.post("/keys", auth, requirePermission("user_create"), (req, res, next) => {
   try {
@@ -460,7 +518,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.1.0",
+    version: "1.2.0",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
