@@ -495,6 +495,17 @@ async function appendSystemLog(log) {
   }
 }
 
+
+async function deleteActivationKey(idOrCode) {
+  await ensureSchema();
+  const db = getPool();
+  await db.query(
+    `DELETE FROM upsystem_activation_keys
+     WHERE code = $1 OR id = $1 OR data->>'id' = $1`,
+    [idOrCode]
+  );
+}
+
 async function clearSystemLogs() {
   await ensureSchema();
   const db = getPool();
@@ -523,6 +534,7 @@ module.exports = {
   normalizeLimit,
   assertPartnerLimit,
   appendSystemLog,
+  deleteActivationKey,
   clearSystemLogs,
   healthDb
 };
