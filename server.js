@@ -438,8 +438,19 @@ app.post("/logs", auth, (req, res) => {
 });
 
 app.get("/logs", auth, (req, res) => {
-  if (req.user.role === "adm") return res.json({ logs: req.db.logs.slice(-500) });
-  res.json({ logs: req.db.logs.filter((l) => l.username === req.user.username).slice(-500) });
+  const validLogs = (req.db.logs || []).filter((log) => log.username && log.username !== "sem-usuario");
+  if (req.user.role === "adm") return res.json({ logs: validLogs.slice(-1000) });
+  res.json({ logs: validLogs.filter((l) => l.username === req.user.username).slice(-500) });
+});
+
+app.delete("/logs", auth, (req, res) => {
+  if (req.user.role === "adm") {
+    req.db.logs = [];
+  } else {
+    req.db.logs = req.db.logs.filter((log) => log.username !== req.user.username);
+  }
+  writeDb(req.db);
+  res.json({ ok: true });
 });
 
 app.use((err, req, res, next) => {
