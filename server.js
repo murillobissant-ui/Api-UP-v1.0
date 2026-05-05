@@ -253,7 +253,7 @@ async function redeemKeyForUser(db, key, user, passwordHash = null, name = null,
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.2.3", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.2.7", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -665,7 +665,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.2.3",
+    version: "1.2.7",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],

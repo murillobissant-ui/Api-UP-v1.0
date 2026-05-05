@@ -238,14 +238,18 @@ async function writeDb(state) {
       );
     }
 
-    const existingLogIds = new Set();
-    const currentLogs = await client.query("SELECT id FROM upsystem_logs");
-    for (const row of currentLogs.rows) existingLogIds.add(row.id);
+    const incomingLogs = Array.isArray(state.logs) ? state.logs.filter((log) => log?.id) : [];
+    const incomingLogIds = incomingLogs.map((log) => log.id);
 
-    for (const log of state.logs || []) {
-      if (!log?.id) continue;
-      if (existingLogIds.has(log.id)) continue;
+    if (Array.isArray(state.logs)) {
+      if (incomingLogIds.length) {
+        await client.query("DELETE FROM upsystem_logs WHERE NOT (id = ANY($1::text[]))", [incomingLogIds]);
+      } else {
+        await client.query("DELETE FROM upsystem_logs");
+      }
+    }
 
+    for (const log of incomingLogs) {
       await client.query(
         `INSERT INTO upsystem_logs (id, data, created_at)
          VALUES ($1, $2::jsonb, COALESCE($3::timestamptz, NOW()))
