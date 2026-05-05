@@ -17,6 +17,8 @@ const {
   bcrypt,
   normalizeLimit,
   assertPartnerLimit,
+  appendSystemLog,
+  clearSystemLogs,
   healthDb
 } = require("./storage");
 
@@ -68,6 +70,54 @@ function requirePermission(permission) {
   return (req, res, next) => {
     if (!hasPermission(req.user, permission)) return res.status(403).json({ error: "Sem permissão." });
     next();
+  };
+}
+
+async function optionalAuth(req, res, next) {
+  try {
+    const header = req.headers.authorization || "";
+    const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+    if (!token) return next();
+
+    const payload = jwt.verify(token, JWT_SECRET);
+    const db = await readDb();
+    const user = db.users.find((u) => u.id === payload.id);
+    if (user && user.isActive && !isExpired(user)) {
+      req.db = db;
+      req.user = user;
+    }
+  } catch {
+    // Log técnico pode ser recebido mesmo quando a sessão quebrou/expirou.
+  }
+  next();
+}
+
+function canReadSystemLogs(user) {
+  return user?.role === "adm" || user?.role === "dev";
+}
+
+function sanitizeSystemLog(body = {}, user = null, req = null) {
+  const allowedLevels = new Set(["error", "warning", "info"]);
+  const level = allowedLevels.has(String(body.level || "").toLowerCase())
+    ? String(body.level).toLowerCase()
+    : "error";
+
+  return {
+    id: makeId("syslog"),
+    level,
+    origin: String(body.origin || body.source || "unknown").slice(0, 120),
+    message: String(body.message || "Erro técnico sem mensagem.").slice(0, 1000),
+    stack: String(body.stack || "").slice(0, 4000),
+    file: String(body.file || "").slice(0, 240),
+    line: body.line === undefined ? null : Number(body.line) || null,
+    column: body.column === undefined ? null : Number(body.column) || null,
+    context: body.context && typeof body.context === "object" && !Array.isArray(body.context) ? body.context : {},
+    url: String(body.url || "").slice(0, 500),
+    userId: user?.id || null,
+    username: user?.username || String(body.username || "").slice(0, 80) || null,
+    clientVersion: String(req?.get?.("X-UpSystem-Version") || body.clientVersion || "").slice(0, 40),
+    userAgent: String(req?.get?.("user-agent") || body.userAgent || "").slice(0, 240),
+    createdAt: nowIso()
   };
 }
 
@@ -267,7 +317,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.4.0");
+  res.setHeader("X-UpSystem-API", "1.4.4");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -293,7 +343,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.4.0", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.4.4", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -701,6 +751,31 @@ app.delete("/logs", auth, (req, res) => {
   res.json({ ok: true });
 });
 
+app.post("/system-logs", optionalAuth, async (req, res, next) => {
+  try {
+    const entry = sanitizeSystemLog(req.body || {}, req.user || null, req);
+    const log = await appendSystemLog(entry);
+    res.json({ ok: true, log });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/system-logs", auth, (req, res) => {
+  if (!canReadSystemLogs(req.user)) return res.status(403).json({ error: "Sem permissão." });
+  const list = Array.isArray(req.db.systemLogs) ? req.db.systemLogs : [];
+  res.json({ systemLogs: list.slice(-100) });
+});
+
+app.delete("/system-logs", auth, async (req, res, next) => {
+  try {
+    if (!canReadSystemLogs(req.user)) return res.status(403).json({ error: "Sem permissão." });
+    await clearSystemLogs();
+    res.json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
 
 app.get("/backup/export", auth, (req, res) => {
   if (req.user.role !== "adm") return res.status(403).json({ error: "Apenas Admin pode exportar dados." });
@@ -708,7 +783,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.4.0",
+    version: "1.4.4",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
@@ -789,6 +864,23 @@ app.post("/backup/import", auth, (req, res) => {
 
 app.use((err, req, res, next) => {
   console.error(err);
+
+  appendSystemLog({
+    level: "error",
+    origin: "api",
+    message: err.message || "Erro interno na API.",
+    stack: err.stack || "",
+    context: {
+      method: req.method,
+      path: req.path,
+      status: err.status || 500
+    },
+    username: req.user?.username || null,
+    userId: req.user?.id || null,
+    clientVersion: req.get("X-UpSystem-Version") || "",
+    createdAt: nowIso()
+  }).catch(() => null);
+
   res.status(err.status || 500).json({ error: err.message || "Erro interno." });
 });
 

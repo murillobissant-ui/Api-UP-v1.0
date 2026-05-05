@@ -5,6 +5,8 @@ const { v4: uuid } = require("uuid");
 const DATABASE_URL = process.env.DATABASE_URL;
 const MAX_LOGS = parsePositiveInt(process.env.MAX_LOGS, 500);
 const LOG_RETENTION_DAYS = parsePositiveInt(process.env.LOG_RETENTION_DAYS, 7);
+const MAX_SYSTEM_LOGS = parsePositiveInt(process.env.MAX_SYSTEM_LOGS, 100);
+const SYSTEM_LOG_RETENTION_DAYS = parsePositiveInt(process.env.SYSTEM_LOG_RETENTION_DAYS, 7);
 
 let pool = null;
 let initialized = false;
@@ -133,8 +135,28 @@ async function ensureSchema() {
   `);
 
   await db.query(`
+    CREATE TABLE IF NOT EXISTS upsystem_system_logs (
+      id TEXT PRIMARY KEY,
+      level TEXT NOT NULL DEFAULT 'error',
+      origin TEXT NOT NULL DEFAULT 'unknown',
+      data JSONB NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+
+  await db.query(`
     CREATE INDEX IF NOT EXISTS idx_upsystem_logs_created_at
     ON upsystem_logs (created_at DESC)
+  `);
+
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_upsystem_system_logs_created_at
+    ON upsystem_system_logs (created_at DESC)
+  `);
+
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_upsystem_system_logs_level
+    ON upsystem_system_logs (level)
   `);
 
   await ensureInitialData();
@@ -213,11 +235,32 @@ async function cleanupLogs(client) {
   );
 }
 
+async function cleanupSystemLogs(client) {
+  if (SYSTEM_LOG_RETENTION_DAYS > 0) {
+    await client.query(
+      "DELETE FROM upsystem_system_logs WHERE created_at < NOW() - ($1::int * INTERVAL '1 day')",
+      [SYSTEM_LOG_RETENTION_DAYS]
+    );
+  }
+
+  await client.query(
+    `DELETE FROM upsystem_system_logs
+     WHERE id IN (
+       SELECT id FROM (
+         SELECT id, ROW_NUMBER() OVER (ORDER BY created_at DESC) AS rn
+         FROM upsystem_system_logs
+       ) ranked
+       WHERE ranked.rn > $1
+     )`,
+    [MAX_SYSTEM_LOGS]
+  );
+}
+
 async function readDb() {
   await ensureSchema();
   const db = getPool();
 
-  const [users, keys, sites, logs] = await Promise.all([
+  const [users, keys, sites, logs, systemLogs] = await Promise.all([
     db.query("SELECT data FROM upsystem_users ORDER BY updated_at ASC"),
     db.query("SELECT data FROM upsystem_activation_keys ORDER BY updated_at ASC"),
     db.query("SELECT data FROM upsystem_sites ORDER BY id ASC"),
@@ -227,6 +270,13 @@ async function readDb() {
        ORDER BY created_at DESC
        LIMIT $1`,
       [MAX_LOGS, LOG_RETENTION_DAYS]
+    ),
+    db.query(
+      `SELECT data FROM upsystem_system_logs
+       WHERE created_at >= NOW() - ($2::int * INTERVAL '1 day')
+       ORDER BY created_at DESC
+       LIMIT $1`,
+      [MAX_SYSTEM_LOGS, SYSTEM_LOG_RETENTION_DAYS]
     )
   ]);
 
@@ -234,7 +284,8 @@ async function readDb() {
     users: users.rows.map(rowData),
     activationKeys: keys.rows.map(rowData),
     sites: sites.rows.map(rowData),
-    logs: logs.rows.map(rowData).reverse()
+    logs: logs.rows.map(rowData).reverse(),
+    systemLogs: systemLogs.rows.map(rowData).reverse()
   };
 }
 
@@ -297,7 +348,34 @@ async function writeDb(state) {
       );
     }
 
+    if (state.__replaceSystemLogs === true) {
+      const incomingSystemLogs = Array.isArray(state.systemLogs) ? state.systemLogs.filter((log) => log?.id) : [];
+      const incomingSystemLogIds = incomingSystemLogs.map((log) => log.id);
+
+      if (incomingSystemLogIds.length) {
+        await client.query("DELETE FROM upsystem_system_logs WHERE NOT (id = ANY($1::text[]))", [incomingSystemLogIds]);
+      } else {
+        await client.query("DELETE FROM upsystem_system_logs");
+      }
+
+      for (const log of incomingSystemLogs) {
+        await client.query(
+          `INSERT INTO upsystem_system_logs (id, level, origin, data, created_at)
+           VALUES ($1, $2, $3, $4::jsonb, COALESCE($5::timestamptz, NOW()))
+           ON CONFLICT (id) DO UPDATE SET level = EXCLUDED.level, origin = EXCLUDED.origin, data = EXCLUDED.data`,
+          [
+            log.id,
+            String(log.level || "error").slice(0, 20),
+            String(log.origin || "unknown").slice(0, 120),
+            JSON.stringify(log),
+            log.createdAt || log.at || null
+          ]
+        );
+      }
+    }
+
     await cleanupLogs(client);
+    await cleanupSystemLogs(client);
 
     await client.query("COMMIT");
   } catch (error) {
@@ -386,6 +464,43 @@ function assertPartnerLimit(db, partner, includeReserved = false) {
   }
 }
 
+async function appendSystemLog(log) {
+  await ensureSchema();
+  const db = getPool();
+  const client = await db.connect();
+  const entry = {
+    ...log,
+    id: log.id || makeId("syslog"),
+    level: String(log.level || "error").slice(0, 20),
+    origin: String(log.origin || "unknown").slice(0, 120),
+    createdAt: log.createdAt || nowIso()
+  };
+
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `INSERT INTO upsystem_system_logs (id, level, origin, data, created_at)
+       VALUES ($1, $2, $3, $4::jsonb, COALESCE($5::timestamptz, NOW()))
+       ON CONFLICT (id) DO UPDATE SET level = EXCLUDED.level, origin = EXCLUDED.origin, data = EXCLUDED.data`,
+      [entry.id, entry.level, entry.origin, JSON.stringify(entry), entry.createdAt]
+    );
+    await cleanupSystemLogs(client);
+    await client.query("COMMIT");
+    return entry;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function clearSystemLogs() {
+  await ensureSchema();
+  const db = getPool();
+  await db.query("DELETE FROM upsystem_system_logs");
+}
+
 async function healthDb() {
   await ensureSchema();
   const db = getPool();
@@ -407,5 +522,7 @@ module.exports = {
   bcrypt,
   normalizeLimit,
   assertPartnerLimit,
+  appendSystemLog,
+  clearSystemLogs,
   healthDb
 };
