@@ -44,10 +44,11 @@ function defaultPermissions(role) {
     "manage_sites",
     "online_connection",
     "dev_tools",
-    "control_repost"
+    "control_repost",
+    "console_access"
   ];
-  if (role === "parceiro") return ["user_create", "user_edit", "user_reset_password", "control_repost"];
-  if (role === "dev") return ["manage_sites", "online_connection", "control_repost", "dev_tools"];
+  if (role === "parceiro") return ["user_create", "user_edit", "user_reset_password", "control_repost", "console_access"];
+  if (role === "dev") return ["manage_sites", "online_connection", "control_repost", "dev_tools", "console_access"];
   return ["control_repost"];
 }
 
@@ -412,6 +413,9 @@ function calcExpiresAt(accessType) {
 function hasPermission(user, permission) {
   if (!user) return false;
   if (user.role === "adm") return true;
+  if (permission === "console_access") {
+    return ["parceiro", "dev"].includes(user.role) || Boolean(user.permissions?.includes("console_access"));
+  }
   return Boolean(user.permissions?.includes(permission));
 }
 

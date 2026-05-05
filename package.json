@@ -1,7 +1,7 @@
 {
   "name": "upsystem-api",
-  "version": "1.4.10",
-  "description": "API online para UpSysteM v1.4.10 com PostgreSQL/Supabase",
+  "version": "1.4.16",
+  "description": "API online para UpSysteM v1.4.16 com PostgreSQL/Supabase",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

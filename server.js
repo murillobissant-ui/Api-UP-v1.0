@@ -143,6 +143,12 @@ function normalizeRole(role) {
   return ["usuario", "parceiro", "dev"].includes(role) ? role : "usuario";
 }
 
+function mergeRolePermissions(role, permissions) {
+  const preset = defaultPermissions(role);
+  const received = Array.isArray(permissions) ? permissions.filter(Boolean) : [];
+  return Array.from(new Set([...preset, ...received]));
+}
+
 function normalizeAccess(accessType) {
   return ["weekly", "monthly", "lifetime"].includes(accessType) ? accessType : "weekly";
 }
@@ -312,7 +318,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.4.10");
+  res.setHeader("X-UpSystem-API", "1.4.16");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -338,7 +344,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.4.10", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.4.16", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -510,7 +516,7 @@ app.post("/users", auth, requirePermission("user_create"), async (req, res, next
       user.accessType = accessType;
       user.expiresAt = req.body.expiresAt ?? calcExpiresAt(accessType);
       user.isActive = Boolean(req.body.isActive);
-      user.permissions = current.role === "adm" ? (req.body.permissions || defaultPermissions(role)) : ["control_repost"];
+      user.permissions = current.role === "adm" ? mergeRolePermissions(role, req.body.permissions) : ["control_repost"];
       user.accountLimit = role === "parceiro" ? normalizeLimit(req.body.accountLimit ?? user.accountLimit ?? 3) : null;
       user.updatedAt = nowIso();
       if (req.body.password) user.passwordHash = await bcrypt.hash(String(req.body.password), 10);
@@ -530,7 +536,7 @@ app.post("/users", auth, requirePermission("user_create"), async (req, res, next
         accessType,
         expiresAt: calcExpiresAt(accessType),
         isActive: true,
-        permissions: current.role === "adm" ? (req.body.permissions || defaultPermissions(role)) : ["control_repost"],
+        permissions: current.role === "adm" ? mergeRolePermissions(role, req.body.permissions) : ["control_repost"],
         accountLimit: role === "parceiro" ? normalizeLimit(req.body.accountLimit ?? 3) : null,
         createdBy: current.role === "adm" ? null : current.username,
         createdByRole: current.role,
@@ -795,7 +801,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.4.10",
+    version: "1.4.16",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
