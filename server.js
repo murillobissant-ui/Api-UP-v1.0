@@ -320,7 +320,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.1.4");
+  res.setHeader("X-UpSystem-API", "1.1.5");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -356,7 +356,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.1.4", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.1.5", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -1025,15 +1025,15 @@ async function sendDiscordDm(userId, content) {
 
 
 function defaultDiscordTemplates() {
-  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "1.1.4";
+  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "1.1.5";
   return [
-    { id: "donation_panel", name: "Painel de doação", buttonLabel: "Selecione um plano", title: "Painel de doação UpSysteM", description: "Escolha um plano de doação e abra sua sala de validação.", body: `🧩 Extensão UpSysteM
+    { id: "donation_panel", name: "Painel de doação", buttonLabel: "💠 DOAR", title: "Painel de doação UpSysteM", description: "Escolha um plano de doação e abra sua sala de validação.", body: `🧩 Extensão UpSysteM
 {status}
 Versão pública: {version}
 
 Sua contribuição ajuda o projeto e libera a key da extensão após a confirmação da doação.`, plansText: `Planos de doação disponíveis:
 • Semanal
-• Mensal`, footer: "Selecione um plano no menu abaixo para criar sua sala de validação da doação." },
+• Mensal`, footer: "Clique em DOAR para selecionar o plano e criar sua sala de validação da doação." },
     { id: "verification_panel", name: "Boas-vindas / Verificação", buttonLabel: "👍 VERIFICAR", title: "Verificação de conta!", description: "Olá! 👋", body: "Após a verificação, selecione o plano e tenha acesso!", plansText: "@everyone", footer: "Clique no botão VERIFICAR para receber o cargo user/verificado." },
     { id: "payment_instructions", name: "Instruções de doação", buttonLabel: "Doar", title: "Como funciona a doação", description: "A doação padrão é Pix via QR Code.", body: "Selecione o plano no menu. O bot criará uma sala temporária de validação da doação com botão para gerar o QR Code.", plansText: "Planos: Semanal ou Mensal.", footer: "Guarde sua key com segurança após a confirmação da doação." },
     { id: "extension_info", name: "Informações da extensão", buttonLabel: "Doar", title: "UpSysteM Extension", description: "Automação com controle de acesso por key.", body: "A key libera o uso da extensão conforme o plano escolhido. O acesso é pessoal e vinculado às regras do sistema.", plansText: "Planos de doação: Semanal e Mensal.", footer: "Suporte pelo servidor Discord." },
@@ -1061,7 +1061,7 @@ function discordAssetPath(fileName) {
   return fs.existsSync(file) ? file : null;
 }
 
-function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.4"; }
+function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.5"; }
 
 function getExtensionRuntimeStatus(db = null) {
   const meta = db?.meta && typeof db.meta === "object" ? db.meta : {};
@@ -1142,7 +1142,7 @@ function templateToDiscordPayload(template, options = {}) {
 Versão pública: v${runtime.version}`, inline: false },
           { name: "Planos de doação", value: plansText || `• Semanal
 • Mensal`, inline: false },
-          { name: "Importante", value: footer || "Selecione um plano no menu abaixo.", inline: false }
+          { name: "Importante", value: footer || "Clique em DOAR para selecionar seu plano.", inline: false }
         ],
         footer: { text: "UpSysteM • Painel de doação" }
       }],
@@ -1649,6 +1649,7 @@ function discordEnvConfig() {
     logChannelId: envText("DISCORD_LOG_CHANNEL_ID"),
     validationCategoryId: envText("DISCORD_VALIDATION_CATEGORY_ID"),
     staffRoleId: envText("DISCORD_STAFF_ROLE_ID") || envText("DISCORD_ROLE_ADMIRO_ID"),
+    botRoleId: envText("DISCORD_BOT_ROLE_ID"),
     verifyChannelId: envText("DISCORD_VERIFY_CHANNEL_ID"),
     userRoleId: envText("DISCORD_ROLE_USER_ID"),
     roleAdmiroId: envText("DISCORD_ROLE_ADMIRO_ID"),
@@ -1673,7 +1674,7 @@ function getDiscordConfig(db = null) {
   const env = discordEnvConfig();
   const saved = getSavedDiscordConfig(db);
   const merged = { ...env };
-  for (const key of ["clientId", "guildId", "salesChannelId", "panelChannelId", "logChannelId", "validationCategoryId", "staffRoleId", "verifyChannelId", "userRoleId", "roleAdmiroId", "roleParceiroId", "roleClientesId", "roleDevId"]) {
+  for (const key of ["clientId", "guildId", "salesChannelId", "panelChannelId", "logChannelId", "validationCategoryId", "staffRoleId", "botRoleId", "verifyChannelId", "userRoleId", "roleAdmiroId", "roleParceiroId", "roleClientesId", "roleDevId"]) {
     if (numericConfig(saved[key])) merged[key] = numericConfig(saved[key]);
   }
   if (!merged.panelChannelId) merged.panelChannelId = merged.salesChannelId;
@@ -1708,6 +1709,8 @@ function getPublicDiscordStatus(config = getDiscordConfig()) {
     logChannelId: config.logChannelId || null,
     validationCategoryConfigured: Boolean(config.validationCategoryId),
     staffRoleConfigured: Boolean(config.staffRoleId),
+    botRoleConfigured: Boolean(config.botRoleId),
+    botRoleId: config.botRoleId || null,
     verifyChannelConfigured: Boolean(config.verifyChannelId),
     userRoleConfigured: Boolean(config.userRoleId),
     verifyChannelId: config.verifyChannelId || null,
@@ -1727,7 +1730,7 @@ function getPublicDiscordStatus(config = getDiscordConfig()) {
 
 function discordConfigPayload(req) {
   const body = req.body || {};
-  const allowed = ["clientId", "guildId", "salesChannelId", "panelChannelId", "logChannelId", "validationCategoryId", "staffRoleId", "verifyChannelId", "userRoleId", "roleAdmiroId", "roleParceiroId", "roleClientesId", "roleDevId"];
+  const allowed = ["clientId", "guildId", "salesChannelId", "panelChannelId", "logChannelId", "validationCategoryId", "staffRoleId", "botRoleId", "verifyChannelId", "userRoleId", "roleAdmiroId", "roleParceiroId", "roleClientesId", "roleDevId"];
   const invalid = Object.entries(body).filter(([key, value]) => value && allowed.includes(key) && !numericConfig(value));
   if (invalid.length) {
     const err = new Error(`IDs inválidos: ${invalid.map(([key]) => key).join(", ")}.`);
@@ -1874,17 +1877,7 @@ app.post("/discord/templates/send-panel", auth, async (req, res, next) => {
     const payload = templateToDiscordPayload(template, { db: req.db });
     payload.components = [{
       type: 1,
-      components: [{
-        type: 3,
-        custom_id: "upsystem_donation_plan",
-        placeholder: template.buttonLabel || "Selecione um plano",
-        min_values: 1,
-        max_values: 1,
-        options: [
-          { label: "Semanal", value: "weekly", description: "Key de acesso semanal" },
-          { label: "Mensal", value: "monthly", description: "Key de acesso mensal" }
-        ]
-      }]
+      components: [{ type: 2, style: 3, custom_id: "upsystem_donate_start", label: template.buttonLabel || "💠 DOAR" }]
     }];
     const sent = await sendDiscordChannelPayload(channelId, payload);
     saveDiscordPanelMeta(req.db, "donation", sent, channelId, templateId, req.user);
@@ -1929,17 +1922,7 @@ app.post("/discord/templates/update-donation-panel", auth, async (req, res, next
     const payload = templateToDiscordPayload(template, { db: req.db });
     payload.components = [{
       type: 1,
-      components: [{
-        type: 3,
-        custom_id: "upsystem_donation_plan",
-        placeholder: template.buttonLabel || "Selecione um plano",
-        min_values: 1,
-        max_values: 1,
-        options: [
-          { label: "Semanal", value: "weekly", description: "Key de acesso semanal" },
-          { label: "Mensal", value: "monthly", description: "Key de acesso mensal" }
-        ]
-      }]
+      components: [{ type: 2, style: 3, custom_id: "upsystem_donate_start", label: template.buttonLabel || "💠 DOAR" }]
     }];
     const edited = await editDiscordMessagePayload(channelId, messageId, payload);
     saveDiscordPanelMeta(req.db, "donation", { message: { id: messageId } }, channelId, "donation_panel", req.user);
@@ -2229,6 +2212,20 @@ async function startDiscordBot() {
       await channel.send({ content: truncateDiscordText(lines.join("\n"), 1900), files });
     }
 
+    function donationPlanSelectRow() {
+      return new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId("upsystem_donation_plan")
+          .setPlaceholder("Selecione seu plano de doação")
+          .setMinValues(1)
+          .setMaxValues(1)
+          .addOptions([
+            { label: "Semanal", value: "weekly", description: "Key de acesso semanal" },
+            { label: "Mensal", value: "monthly", description: "Key de acesso mensal" }
+          ])
+      );
+    }
+
     function memberHasDonationAccess(member, config) {
       const allowed = [config.userRoleId, config.roleClientesId, config.roleParceiroId, config.roleAdmiroId, config.roleDevId].filter(Boolean);
       if (!allowed.length) return true;
@@ -2250,6 +2247,21 @@ async function startDiscordBot() {
         return interaction.reply({ content: "Verificação concluída. Você já pode usar o painel de doação.", ephemeral: true });
       }
 
+      if (interaction.isButton() && interaction.customId === "upsystem_donate_start") {
+        const config = getDiscordConfig(await readDb().catch(() => null));
+        if (config.userRoleId) {
+          const member = await interaction.guild?.members.fetch(interaction.user.id).catch(() => null) || interaction.member;
+          const verified = memberHasDonationAccess(member, config);
+          if (!verified) {
+            const where = config.verifyChannelId ? ` Acesse <#${config.verifyChannelId}> e clique em Verificar.` : " Faça a verificação no canal indicado pelo servidor.";
+            await logDiscordEvent(`⛔ Doação bloqueada no botão DOAR por falta de verificação. Usuário: <@${interaction.user.id}> · Canal: <#${interaction.channelId}>`);
+            return interaction.reply({ content: `Você precisa se verificar antes de doar.${where}`, ephemeral: true });
+          }
+        }
+        await logDiscordEvent(`💠 Botão DOAR clicado. Usuário: <@${interaction.user.id}> · Canal: <#${interaction.channelId}>`);
+        return interaction.reply({ content: "Selecione seu plano de doação:", components: [donationPlanSelectRow()], ephemeral: true });
+      }
+
       if (interaction.isStringSelectMenu() && interaction.customId === "upsystem_donation_plan") {
         await interaction.deferReply({ ephemeral: true });
         const plan = normalizeDonationPlan(interaction.values?.[0] || "monthly");
@@ -2267,11 +2279,15 @@ async function startDiscordBot() {
         const guild = interaction.guild;
         if (!guild) throw new Error("Servidor Discord não disponível para criar canal de validação.");
         const channelName = `doacao-${discordSafeName(interaction.user.username)}-${Date.now().toString().slice(-5)}`;
+        const botMember = guild.members.me || await guild.members.fetchMe().catch(() => null);
+        const botAllow = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.EmbedLinks];
         const overwrites = [
-          { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-          { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
+          { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] }
         ];
-        if (config.staffRoleId) overwrites.push({ id: config.staffRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] });
+        if (botMember?.id) overwrites.push({ id: botMember.id, allow: botAllow });
+        if (config.botRoleId) overwrites.push({ id: config.botRoleId, allow: botAllow });
+        overwrites.push({ id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] });
+        if (config.staffRoleId) overwrites.push({ id: config.staffRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.AttachFiles] });
         const validationChannel = await guild.channels.create({
           name: channelName,
           type: ChannelType.GuildText,
@@ -2287,7 +2303,17 @@ async function startDiscordBot() {
         order.donationStatus = "aguardando_dados_doador";
         db.discordOrders = [order, ...ensureDiscordOrderArray(db)].slice(0, 100);
         await writeDb(db);
-        await sendDiscordChannelPayload(validationChannel.id, buildValidationRoomPayload(order, db));
+        const validationPayload = buildValidationRoomPayload(order, db);
+        try {
+          await sendDiscordChannelPayload(validationChannel.id, validationPayload);
+        } catch (payloadError) {
+          await logDiscordEvent(`⚠️ Falha ao enviar template por REST na sala <#${validationChannel.id}>. Tentando envio direto pelo objeto do canal. Erro: ${payloadError.message || "sem detalhe"}`);
+          const files = (validationPayload.assetFiles || []).map((name) => discordAssetPath(name)).filter(Boolean).map((filePath) => new AttachmentBuilder(filePath));
+          const directPayload = { ...validationPayload };
+          delete directPayload.assetFiles;
+          if (files.length) directPayload.files = files;
+          await validationChannel.send(directPayload);
+        }
         await interaction.editReply({ content: `Sala de validação criada: <#${validationChannel.id}>. Clique no botão **💠 GERAR DOAÇÃO** dentro da sala para informar seus dados e gerar o Pix.` });
         await logDiscordEvent(`🟡 Nova sala de validação criada. Usuário: <@${interaction.user.id}> · Plano: ${donationPlanLabel(plan)} · Canal: <#${validationChannel.id}> · Status: aguardando_dados_doador`);
         return;
@@ -2378,7 +2404,7 @@ async function startDiscordBot() {
       const isBotPermissionError = error?.code === 50013 || /Missing Permissions/i.test(String(error?.message || ""));
       const content = isBotPermissionError
         ? "A sala foi iniciada, mas o bot não tem alguma permissão necessária para concluir esta etapa. O administrador foi avisado para revisar permissões de canal/categoria, embeds, anexos ou mensagens."
-        : "Não foi possível iniciar a doação agora. O administrador foi avisado para verificar a integração.";
+        : "Não foi possível iniciar a doação agora. O administrador foi avisado para verificar a integração e permissões do bot.";
       if (isBotPermissionError) {
         await appendSystemLog({
           level: "warning",
@@ -2428,7 +2454,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.1.4",
+    version: "1.1.5",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
