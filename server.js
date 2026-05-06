@@ -25,6 +25,8 @@ const {
   appendSystemLog,
   deleteActivationKey,
   deleteUserById,
+  deleteActivationKeysForUser,
+  repairOrphanActivationKeys,
   clearSystemLogs,
   healthDb
 } = require("./storage");
@@ -316,7 +318,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.0.1");
+  res.setHeader("X-UpSystem-API", "1.0.2");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -352,7 +354,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.0.1", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.0.2", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -603,16 +605,25 @@ app.delete("/users/:id", auth, requirePermission("user_delete"), async (req, res
       return res.status(403).json({ error: "Apenas Admin pode excluir usuários permitidos." });
     }
 
+    await deleteActivationKeysForUser(target);
     await deleteUserById(target.id);
     db.users = db.users.filter((u) => u.id !== target.id);
-    res.json({ ok: true });
+    db.activationKeys = db.activationKeys.filter((key) => {
+      const linkedCodes = new Set([target.activeKey, target.createdByKey, ...(Array.isArray(target.keyHistory) ? target.keyHistory : [])].filter(Boolean));
+      const linkedUser = String(key.usedBy || key.redeemedBy || key.username || "").toLowerCase();
+      return !linkedCodes.has(key.code) && key.usedUserId !== target.id && linkedUser !== String(target.username || "").toLowerCase();
+    });
+    if (repairOrphanActivationKeys(db)) await writeDb(db);
+    res.json({ ok: true, removedKeys: true });
   } catch (error) {
     next(error);
   }
 });
 
-app.get("/keys", auth, (req, res) => {
-  const keys = visibleKeys(req.db, req.user).map((key) => {
+app.get("/keys", auth, async (req, res, next) => {
+  try {
+    if (repairOrphanActivationKeys(req.db)) await writeDb(req.db);
+    const keys = visibleKeys(req.db, req.user).map((key) => {
     const expired = key.keyExpiresAt && new Date(key.keyExpiresAt).getTime() < Date.now();
     return {
       ...key,
@@ -628,7 +639,10 @@ app.get("/keys", auth, (req, res) => {
     };
   });
 
-  res.json({ keys });
+    res.json({ keys });
+  } catch (error) {
+    next(error);
+  }
 });
 
 
@@ -815,7 +829,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.0.1",
+    version: "1.0.2",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],

@@ -51,7 +51,8 @@ const PERMISSIONS = {
   backup_export: "Exportar backup",
   backup_import: "Importar backup",
   system_logs: "Log do Sistema",
-  dev_tools: "Área Dev"
+  dev_tools: "Área Dev",
+  discord_integration: "Integração Discord"
 };
 
 const ROLE_PERMISSIONS = {
@@ -600,6 +601,64 @@ async function deleteUserById(idOrUsername) {
   );
 }
 
+
+async function deleteActivationKeysForUser(user) {
+  await ensureSchema();
+  const db = getPool();
+  const identifiers = Array.from(new Set([
+    user?.activeKey,
+    user?.createdByKey,
+    ...(Array.isArray(user?.keyHistory) ? user.keyHistory : [])
+  ].filter(Boolean).map(String)));
+
+  await db.query(
+    `DELETE FROM upsystem_activation_keys
+     WHERE ($1::text[] IS NOT NULL AND (code = ANY($1::text[]) OR id = ANY($1::text[]) OR data->>'code' = ANY($1::text[])))
+        OR data->>'usedUserId' = $2
+        OR data->>'userId' = $2
+        OR LOWER(COALESCE(data->>'usedBy', data->>'redeemedBy', data->>'username', '')) = LOWER($3)`,
+    [identifiers, String(user?.id || ''), String(user?.username || '')]
+  );
+}
+
+function keyHasUserLink(key) {
+  return Boolean(key?.usedUserId || key?.userId || key?.usedBy || key?.redeemedBy || key?.username);
+}
+
+function isInactiveStatus(status) {
+  return ["inactive", "inativa", "disabled", "revoked", "cancelled", "canceled", "replaced"].includes(String(status || "").toLowerCase());
+}
+
+function repairOrphanActivationKeys(state, note = "Usuário vinculado não encontrado ou foi excluído.") {
+  const users = Array.isArray(state?.users) ? state.users : [];
+  const byId = new Set(users.map((user) => String(user?.id || "")).filter(Boolean));
+  const byUsername = new Set(users.map((user) => String(user?.username || "").toLowerCase()).filter(Boolean));
+  let changed = false;
+
+  state.activationKeys = (state.activationKeys || []).map((key) => {
+    if (!keyHasUserLink(key) || isInactiveStatus(key.status)) return key;
+
+    const linkedId = String(key.usedUserId || key.userId || "");
+    const linkedUser = String(key.usedBy || key.redeemedBy || key.username || "").toLowerCase();
+    const hasIdMatch = linkedId && byId.has(linkedId);
+    const hasUserMatch = linkedUser && byUsername.has(linkedUser);
+
+    if (hasIdMatch || hasUserMatch) return key;
+
+    changed = true;
+    return {
+      ...key,
+      status: "inactive",
+      statusUpdatedAt: nowIso(),
+      statusUpdatedBy: "system",
+      statusNote: key.statusNote || note,
+      orphanedAt: key.orphanedAt || nowIso()
+    };
+  });
+
+  return changed;
+}
+
 async function clearSystemLogs() {
   await ensureSchema();
   const db = getPool();
@@ -640,6 +699,8 @@ module.exports = {
   appendSystemLog,
   deleteActivationKey,
   deleteUserById,
+  deleteActivationKeysForUser,
+  repairOrphanActivationKeys,
   clearSystemLogs,
   healthDb
 };
