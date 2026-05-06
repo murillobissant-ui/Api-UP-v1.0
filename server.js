@@ -318,7 +318,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.0.8");
+  res.setHeader("X-UpSystem-API", "1.0.9");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -354,7 +354,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.0.8", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.0.9", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -1247,7 +1247,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.0.8",
+    version: "1.0.9",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
