@@ -318,7 +318,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.0.2");
+  res.setHeader("X-UpSystem-API", "1.0.3");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -354,7 +354,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.0.2", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.0.3", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -813,6 +813,40 @@ app.get("/system-logs", auth, (req, res) => {
   res.json({ systemLogs: list.slice(-100) });
 });
 
+app.get("/discord/status", auth, (req, res) => {
+  if (!hasPermission(req.user, "discord_integration") || req.user.role !== "adm") {
+    return res.status(403).json({ error: "Apenas Admin pode acessar a integração Discord." });
+  }
+
+  const enabled = String(process.env.DISCORD_ENABLED || "false").toLowerCase() === "true";
+  const clientId = String(process.env.DISCORD_CLIENT_ID || "").trim();
+  const guildId = String(process.env.DISCORD_GUILD_ID || "").trim();
+  const salesChannelId = String(process.env.DISCORD_SALES_CHANNEL_ID || "").trim();
+  const logChannelId = String(process.env.DISCORD_LOG_CHANNEL_ID || "").trim();
+  const tokenPresent = Boolean(String(process.env.DISCORD_BOT_TOKEN || "").trim());
+
+  res.json({
+    ok: true,
+    discord: {
+      enabled,
+      configured: Boolean(clientId && guildId && salesChannelId && logChannelId && tokenPresent),
+      clientIdConfigured: Boolean(clientId),
+      guildIdConfigured: Boolean(guildId),
+      salesChannelConfigured: Boolean(salesChannelId),
+      logChannelConfigured: Boolean(logChannelId),
+      tokenConfigured: tokenPresent,
+      clientId: clientId || null,
+      guildId: guildId || null,
+      salesChannelId: salesChannelId || null,
+      logChannelId: logChannelId || null,
+      mode: enabled ? "ready_to_connect" : "prepared_disabled",
+      message: enabled
+        ? "Discord configurado para futura ativação. Nenhum comando de venda foi iniciado nesta versão."
+        : "Discord preparado, mas desativado por DISCORD_ENABLED=false."
+    }
+  });
+});
+
 app.delete("/system-logs", auth, async (req, res, next) => {
   try {
     if (!canReadSystemLogs(req.user)) return res.status(403).json({ error: "Sem permissão." });
@@ -829,7 +863,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.0.2",
+    version: "1.0.3",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
