@@ -12,6 +12,7 @@ ADMIN_PASSWORD=troque-essa-senha
 CORS_ORIGIN=*
 DATABASE_URL=postgresql://postgres.SEUPROJETO:SUA_SENHA@aws-1-us-west-2.pooler.supabase.com:6543/postgres
 MIN_EXTENSION_VERSION=1.0.1
+REQUIRED_EXTENSION_BUILD=upsystem-v1-cleanbase-001
 MAX_LOGS=500
 LOG_RETENTION_DAYS=7
 ```
@@ -62,3 +63,8 @@ SYSTEM_LOG_RETENTION_DAYS=7
 ```
 
 A API cria a tabela `upsystem_system_logs` automaticamente no PostgreSQL/Supabase.
+
+
+### Bloqueio por build da extensão
+
+Use `REQUIRED_EXTENSION_BUILD=upsystem-v1-cleanbase-001` no Render para bloquear versões antigas mesmo quando a numeração da versão for reduzida. A extensão DEV v1.0.1 envia o header `X-UpSystem-Build` em todas as chamadas online.

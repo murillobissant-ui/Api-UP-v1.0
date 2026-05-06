@@ -123,6 +123,7 @@ function sanitizeSystemLog(body = {}, user = null, req = null) {
     userId: user?.id || null,
     username: user?.username || String(body.username || "").slice(0, 80) || null,
     clientVersion: String(req?.get?.("X-UpSystem-Version") || body.clientVersion || "").slice(0, 40),
+    clientBuild: String(req?.get?.("X-UpSystem-Build") || body.clientBuild || "").slice(0, 80),
     userAgent: String(req?.get?.("user-agent") || body.userAgent || "").slice(0, 240),
     createdAt: nowIso()
   };
@@ -322,13 +323,23 @@ function clientSecurity(req, res, next) {
   }
 
   const minVersion = String(process.env.MIN_EXTENSION_VERSION || "").trim();
+  const requiredBuild = String(process.env.REQUIRED_EXTENSION_BUILD || "").trim();
   const clientVersion = String(req.get("X-UpSystem-Version") || "").trim();
+  const clientBuild = String(req.get("X-UpSystem-Build") || "").trim();
 
   if (minVersion && (!clientVersion || compareVersion(clientVersion, minVersion) < 0)) {
     return res.status(426).json({
       error: `Extensão desatualizada. Versão mínima exigida: ${minVersion}.`,
       code: "EXTENSION_OUTDATED",
       minVersion
+    });
+  }
+
+  if (requiredBuild && clientBuild !== requiredBuild) {
+    return res.status(426).json({
+      error: "Build da extensão não autorizado. Atualize a extensão para continuar.",
+      code: "EXTENSION_BUILD_BLOCKED",
+      requiredBuild
     });
   }
 
