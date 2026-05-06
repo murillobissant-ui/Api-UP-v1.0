@@ -5,6 +5,10 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const fs = require("fs");
 const path = require("path");
+let QRCode = null;
+let PNG = null;
+try { QRCode = require("qrcode"); } catch (_) {}
+try { PNG = require("pngjs").PNG; } catch (_) {}
 const {
   readDb,
   writeDb,
@@ -320,7 +324,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.1.5");
+  res.setHeader("X-UpSystem-API", "1.1.6");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -356,7 +360,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.1.5", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.1.6", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -1025,7 +1029,7 @@ async function sendDiscordDm(userId, content) {
 
 
 function defaultDiscordTemplates() {
-  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "1.1.5";
+  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "1.1.6";
   return [
     { id: "donation_panel", name: "Painel de doação", buttonLabel: "💠 DOAR", title: "Painel de doação UpSysteM", description: "Escolha um plano de doação e abra sua sala de validação.", body: `🧩 Extensão UpSysteM
 {status}
@@ -1061,7 +1065,94 @@ function discordAssetPath(fileName) {
   return fs.existsSync(file) ? file : null;
 }
 
-function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.5"; }
+function resizePngNearest(src, width, height) {
+  const out = new PNG({ width, height });
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const sx = Math.floor(x * src.width / width);
+      const sy = Math.floor(y * src.height / height);
+      const si = (sy * src.width + sx) << 2;
+      const di = (y * width + x) << 2;
+      out.data[di] = src.data[si];
+      out.data[di + 1] = src.data[si + 1];
+      out.data[di + 2] = src.data[si + 2];
+      out.data[di + 3] = src.data[si + 3];
+    }
+  }
+  return out;
+}
+
+async function buildBrandedPixQrBuffer(pixCode) {
+  if (!pixCode) return null;
+  if (!QRCode || !PNG) return null;
+  const baseBuffer = await QRCode.toBuffer(String(pixCode), {
+    type: "png",
+    errorCorrectionLevel: "H",
+    width: 360,
+    margin: 2,
+    color: { dark: "#000000", light: "#FFFFFF" }
+  });
+  const qr = PNG.sync.read(baseBuffer);
+  const logoPath = discordAssetPath(DISCORD_LOGO_FILE);
+  if (!logoPath) return baseBuffer;
+  const logo = PNG.sync.read(fs.readFileSync(logoPath));
+  const logoSize = Math.round(qr.width * 0.18);
+  const resized = resizePngNearest(logo, logoSize, logoSize);
+  const pad = Math.round(qr.width * 0.025);
+  const boxSize = logoSize + pad * 2;
+  const startX = Math.floor((qr.width - boxSize) / 2);
+  const startY = Math.floor((qr.height - boxSize) / 2);
+  for (let y = 0; y < boxSize; y++) {
+    for (let x = 0; x < boxSize; x++) {
+      const i = ((startY + y) * qr.width + (startX + x)) << 2;
+      qr.data[i] = 255; qr.data[i + 1] = 255; qr.data[i + 2] = 255; qr.data[i + 3] = 255;
+    }
+  }
+  const lx = startX + pad;
+  const ly = startY + pad;
+  for (let y = 0; y < logoSize; y++) {
+    for (let x = 0; x < logoSize; x++) {
+      const si = (y * logoSize + x) << 2;
+      const alpha = resized.data[si + 3] / 255;
+      if (alpha <= 0) continue;
+      const di = ((ly + y) * qr.width + (lx + x)) << 2;
+      qr.data[di] = Math.round(resized.data[si] * alpha + qr.data[di] * (1 - alpha));
+      qr.data[di + 1] = Math.round(resized.data[si + 1] * alpha + qr.data[di + 1] * (1 - alpha));
+      qr.data[di + 2] = Math.round(resized.data[si + 2] * alpha + qr.data[di + 2] * (1 - alpha));
+      qr.data[di + 3] = 255;
+    }
+  }
+  return PNG.sync.write(qr);
+}
+
+function buildDonationGeneratedEmbed(order) {
+  const donor = [order.customerFirstName, order.customerLastName].filter(Boolean).join(" ") || "Não informado";
+  return {
+    author: { name: "UpSysteM", icon_url: `attachment://${DISCORD_LOGO_FILE}` },
+    title: "Doação gerada com sucesso",
+    description: "Escaneie o QR Code abaixo para concluir sua doação. O Pix copia e cola e o link da doação ficam disponíveis nos botões abaixo.",
+    color: 0x7c3aed,
+    thumbnail: { url: `attachment://${DISCORD_LOGO_FILE}` },
+    fields: [
+      { name: "Plano", value: donationPlanLabel(order.plan), inline: true },
+      { name: "Valor da doação", value: `R$ ${Number(order.amount || 0).toFixed(2)}`, inline: true },
+      { name: "Doador", value: donor, inline: false },
+      { name: "E-mail", value: String(order.customerEmail || "Não informado"), inline: false },
+      { name: "Status", value: "Aguardando confirmação da doação", inline: false }
+    ],
+    image: { url: "attachment://upsystem-pix-qrcode.png" },
+    footer: { text: "Após a confirmação, a key será enviada por DM. Se a DM estiver bloqueada, ela aparecerá nesta sala." }
+  };
+}
+
+function donationActionButtons() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("upsystem_donation_link").setLabel("LINK DA DOAÇÃO").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("upsystem_donation_pix").setLabel("PIX COPIA E COLA").setStyle(ButtonStyle.Success)
+  );
+}
+
+function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.6"; }
 
 function getExtensionRuntimeStatus(db = null) {
   const meta = db?.meta && typeof db.meta === "object" ? db.meta : {};
@@ -1504,9 +1595,14 @@ function createPreparedOrder(body = {}, user = null) {
   };
 }
 
-function findDonationOrder(db, externalReference) {
+function findDonationOrder(db, externalReference, paymentId = null) {
   const orders = Array.isArray(db.discordOrders) ? db.discordOrders : [];
-  return orders.find((order) => order.id === externalReference || order.externalReference === externalReference || order.mpPreferenceId === externalReference);
+  const ref = String(externalReference || "").trim();
+  const payId = String(paymentId || "").trim();
+  return orders.find((order) =>
+    (ref && (order.id === ref || order.externalReference === ref || order.mpPreferenceId === ref || order.paymentId === ref)) ||
+    (payId && String(order.paymentId || "") === payId)
+  );
 }
 
 async function createMercadoPagoPreference(order, config) {
@@ -1583,8 +1679,8 @@ async function createMercadoPagoPixPayment(order, config) {
     },
     payer: {
       email: order.customerEmail,
-      first_name: order.discordDisplayName || order.discordUsername || "Discord",
-      last_name: "UpSysteM"
+      first_name: order.customerFirstName || order.discordDisplayName || order.discordUsername || "Discord",
+      last_name: order.customerLastName || "UpSysteM"
     }
   };
 
@@ -2033,10 +2129,11 @@ app.post("/webhooks/mercadopago", async (req, res) => {
       return res.status(202).json({ ok: true, received: true, message: "Webhook recebido sem payment id." });
     }
 
+    await logDiscordEvent(`📩 Webhook Mercado Pago recebido. payment_id: ${paymentId}`).catch(() => null);
     const payment = await fetchMercadoPagoPayment(paymentId, config);
     const externalReference = String(payment.external_reference || payment.metadata?.upsystem_order_id || "").trim();
     const db = await readDb();
-    const order = findDonationOrder(db, externalReference);
+    const order = findDonationOrder(db, externalReference, paymentId);
 
     await appendSystemLog({
       level: order ? "info" : "warning",
@@ -2061,6 +2158,7 @@ app.post("/webhooks/mercadopago", async (req, res) => {
 
       if (payment.status === "approved") {
         finalized = await finalizeApprovedDonation(db, order, payment);
+        await logDiscordEvent(`✅ Doação aprovada via Mercado Pago. Usuário: <@${order.discordUserId || "desconhecido"}> · Doação: ${order.id} · payment_id: ${paymentId}`).catch(() => null);
       } else {
         order.status = "aguardando_doacao";
         order.donationStatus = "aguardando_doacao";
@@ -2191,39 +2289,17 @@ async function startDiscordBot() {
     }
 
     async function sendPixToValidationChannel(channel, order) {
-      const lines = [
-        `Olá <@${order.discordUserId}>. Sua doação foi preparada.`,
-        `Plano: **${donationPlanLabel(order.plan)}**`,
-        `Valor: **R$ ${Number(order.amount).toFixed(2)}**`,
-        `Doador: **${[order.customerFirstName, order.customerLastName].filter(Boolean).join(" ") || "Não informado"}**`,
-        `E-mail: **${order.customerEmail || "Não informado"}**`,
-        "Status: aguardando confirmação da doação",
-        "",
-        "**Pagamento padrão: Pix QR Code**",
-        order.pixQrCode ? `Pix copia e cola:\n\`${truncateDiscordText(order.pixQrCode, 900)}\`` : "Pix copia e cola indisponível no retorno do Mercado Pago.",
-        order.pixTicketUrl ? `Link alternativo Mercado Pago: ${order.pixTicketUrl}` : "",
-        "",
-        "Após a confirmação, a key será enviada por DM. Se sua DM estiver bloqueada, ela aparecerá neste canal antes da exclusão automática."
-      ].filter(Boolean);
-      const files = [];
-      if (order.pixQrCodeBase64) {
+      const qrBuffer = await buildBrandedPixQrBuffer(order.pixQrCode).catch(() => null);
+      const files = [new AttachmentBuilder(fs.readFileSync(discordAssetPath(DISCORD_LOGO_FILE)), { name: DISCORD_LOGO_FILE })];
+      if (qrBuffer) files.push(new AttachmentBuilder(qrBuffer, { name: "upsystem-pix-qrcode.png" }));
+      else if (order.pixQrCodeBase64) {
         try { files.push(new AttachmentBuilder(Buffer.from(order.pixQrCodeBase64, "base64"), { name: "upsystem-pix-qrcode.png" })); } catch (_) {}
       }
-      await channel.send({ content: truncateDiscordText(lines.join("\n"), 1900), files });
-    }
-
-    function donationPlanSelectRow() {
-      return new ActionRowBuilder().addComponents(
-        new StringSelectMenuBuilder()
-          .setCustomId("upsystem_donation_plan")
-          .setPlaceholder("Selecione seu plano de doação")
-          .setMinValues(1)
-          .setMaxValues(1)
-          .addOptions([
-            { label: "Semanal", value: "weekly", description: "Key de acesso semanal" },
-            { label: "Mensal", value: "monthly", description: "Key de acesso mensal" }
-          ])
-      );
+      await channel.send({
+        embeds: [buildDonationGeneratedEmbed(order)],
+        files,
+        components: [donationActionButtons()]
+      });
     }
 
     function memberHasDonationAccess(member, config) {
@@ -2336,6 +2412,24 @@ async function startDiscordBot() {
         return interaction.showModal(modal);
       }
 
+      if (interaction.isButton() && interaction.customId === "upsystem_donation_link") {
+        const db = await readDb();
+        const order = findLatestDiscordOrderForChannel(db, interaction.channelId, interaction.user.id);
+        if (!order || !order.pixTicketUrl) return interaction.reply({ content: "Link da doação ainda não disponível para esta sala.", ephemeral: true });
+        await logDiscordEvent(`🔗 Link da doação solicitado. Usuário: <@${interaction.user.id}> · Doação: ${order.id}`).catch(() => null);
+        return interaction.reply({ content: `🔗 Link da doação:
+${order.pixTicketUrl}`, ephemeral: true });
+      }
+
+      if (interaction.isButton() && interaction.customId === "upsystem_donation_pix") {
+        const db = await readDb();
+        const order = findLatestDiscordOrderForChannel(db, interaction.channelId, interaction.user.id);
+        if (!order || !order.pixQrCode) return interaction.reply({ content: "Pix copia e cola ainda não disponível para esta sala.", ephemeral: true });
+        await logDiscordEvent(`📋 Pix copia e cola solicitado. Usuário: <@${interaction.user.id}> · Doação: ${order.id}`).catch(() => null);
+        return interaction.reply({ content: `📋 Pix copia e cola:
+\`\`\`${truncateDiscordText(order.pixQrCode, 1800)}\`\`\``, ephemeral: true });
+      }
+
       if (interaction.isModalSubmit() && interaction.customId === "upsystem_donation_details") {
         await interaction.deferReply({ ephemeral: true });
         const db = await readDb();
@@ -2385,7 +2479,7 @@ async function startDiscordBot() {
 
         const targetChannel = interaction.channel;
         if (targetChannel) await sendPixToValidationChannel(targetChannel, order);
-        await logDiscordEvent(`💸 Doação gerada por modal. Usuário: <@${interaction.user.id}> · Plano: ${donationPlanLabel(order.plan)} · Sala: <#${interaction.channelId}> · Status: ${order.paymentStatus}`);
+        await logDiscordEvent(`💸 QR Code Pix gerado. Usuário: <@${interaction.user.id}> · Plano: ${donationPlanLabel(order.plan)} · Sala: <#${interaction.channelId}> · Status: ${order.paymentStatus} · Doação: ${order.id}`);
         return interaction.editReply({ content: "Dados recebidos. O QR Code Pix foi enviado na sala de validação." });
       }
 
@@ -2454,7 +2548,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.1.5",
+    version: "1.1.6",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
