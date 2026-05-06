@@ -318,7 +318,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.0.9");
+  res.setHeader("X-UpSystem-API", "1.0.10");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -354,7 +354,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.0.9", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.0.10", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -825,12 +825,14 @@ function envText(name) {
 }
 
 function getPaymentConfig() {
+  const mpAccessToken = envText("MERCADOPAGO_ACCESS_TOKEN");
   const mercadoPago = {
     enabled: envBool("MERCADOPAGO_ENABLED", false),
-    accessTokenPresent: Boolean(envText("MERCADOPAGO_ACCESS_TOKEN")),
+    accessToken: mpAccessToken,
+    accessTokenPresent: Boolean(mpAccessToken),
     webhookSecretPresent: Boolean(envText("MERCADOPAGO_WEBHOOK_SECRET")),
     mode: envText("MERCADOPAGO_MODE") || "production",
-    configured: Boolean(envText("MERCADOPAGO_ACCESS_TOKEN"))
+    configured: Boolean(mpAccessToken)
   };
 
   const paypalMode = (envText("PAYPAL_MODE") || "sandbox").toLowerCase() === "live" ? "live" : "sandbox";
@@ -903,6 +905,63 @@ function normalizeDonationAmount(value) {
   const amount = Number(value);
   if (!Number.isFinite(amount) || amount <= 0) return null;
   return Math.round(amount * 100) / 100;
+}
+
+function mercadoPagoTokenDiagnostic(config = {}) {
+  const token = String(config.accessToken || "").trim();
+  const prefix = token ? token.slice(0, Math.min(12, token.length)) : "";
+  const tokenType = token.startsWith("APP_USR-") ? "production" : token.startsWith("TEST-") ? "test" : token.startsWith("APP_") ? "public_key_or_invalid" : "unknown";
+  return {
+    tokenPresent: Boolean(token),
+    tokenPrefix: prefix,
+    tokenLength: token.length,
+    tokenType,
+    looksLikePublicKey: token.startsWith("APP_USR-") && token.length < 80 ? false : token.startsWith("APP_") && !token.startsWith("APP_USR-"),
+    configuredMode: String(config.mode || "production")
+  };
+}
+
+function mercadoPagoErrorDiagnostic(error, config = {}, payload = {}) {
+  const details = error?.details && typeof error.details === "object" ? error.details : {};
+  const tokenInfo = mercadoPagoTokenDiagnostic(config);
+  const code = details.code || details.error || details.status || null;
+  const message = details.message || error?.message || "Falha Mercado Pago.";
+  const diagnostic = {
+    provider: "mercadopago",
+    endpoint: "POST /checkout/preferences",
+    httpStatus: error?.status || null,
+    mercadoPagoCode: code,
+    mercadoPagoMessage: message,
+    mercadoPagoRaw: details,
+    requestSummary: {
+      external_reference: payload.external_reference || null,
+      currency_id: payload.items?.[0]?.currency_id || null,
+      unit_price: payload.items?.[0]?.unit_price || null,
+      notification_url_present: Boolean(payload.notification_url),
+      payer_email_present: Boolean(payload.payer?.email)
+    },
+    renderConfig: {
+      enabled: Boolean(config.enabled),
+      configured: Boolean(config.configured),
+      mode: tokenInfo.configuredMode,
+      tokenPresent: tokenInfo.tokenPresent,
+      tokenPrefix: tokenInfo.tokenPrefix,
+      tokenLength: tokenInfo.tokenLength,
+      tokenType: tokenInfo.tokenType,
+      looksLikePublicKey: tokenInfo.looksLikePublicKey
+    },
+    likelyCauses: []
+  };
+
+  if (!tokenInfo.tokenPresent) diagnostic.likelyCauses.push("MERCADOPAGO_ACCESS_TOKEN ausente no Render.");
+  if (tokenInfo.looksLikePublicKey) diagnostic.likelyCauses.push("MERCADOPAGO_ACCESS_TOKEN parece Public Key. Use o Access Token produtivo ou de teste.");
+  if (tokenInfo.tokenType === "test" && tokenInfo.configuredMode === "production") diagnostic.likelyCauses.push("Token de teste com MERCADOPAGO_MODE=production.");
+  if (tokenInfo.tokenType === "production" && tokenInfo.configuredMode === "sandbox") diagnostic.likelyCauses.push("Token produtivo com MERCADOPAGO_MODE=sandbox.");
+  if (String(code).toLowerCase().includes("unauthorized") || String(message).toLowerCase().includes("unauthorized")) {
+    diagnostic.likelyCauses.push("Mercado Pago recusou a requisição por política/autorização. Verifique conta habilitada, Access Token correto, app produtivo e políticas da conta.");
+  }
+  if (!diagnostic.likelyCauses.length) diagnostic.likelyCauses.push("Verifique o payload, credenciais e permissões da aplicação Mercado Pago.");
+  return diagnostic;
 }
 
 function createPreparedOrder(body = {}, user = null) {
@@ -981,6 +1040,8 @@ async function createMercadoPagoPreference(order, config) {
     const error = new Error(message);
     error.status = response.status;
     error.details = data;
+    error.mpPayload = payload;
+    error.mpDiagnostic = mercadoPagoErrorDiagnostic(error, config, payload);
     throw error;
   }
 
@@ -1152,15 +1213,21 @@ app.post("/payments/mercadopago/donation", auth, async (req, res, next) => {
 
     res.status(201).json({ ok: true, order, paymentUrl: order.paymentUrl });
   } catch (error) {
+    const config = getPaymentConfig().mercadoPago;
+    const diagnostic = error.mpDiagnostic || mercadoPagoErrorDiagnostic(error, config, error.mpPayload || {});
     appendSystemLog({
       level: "warning",
       origin: "api.payments.mercadopago.donation",
       message: error.message || "Falha ao criar link de doação Mercado Pago.",
       userId: req.user?.id || null,
       username: req.user?.username || null,
-      context: { status: error.status || null, details: error.details || null }
+      context: diagnostic
     }).catch(() => null);
-    next(error);
+    res.status(error.status || 500).json({
+      error: error.message || "Falha ao criar link de doação Mercado Pago.",
+      code: diagnostic.mercadoPagoCode || null,
+      diagnostic
+    });
   }
 });
 
@@ -1247,7 +1314,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.0.9",
+    version: "1.0.10",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],

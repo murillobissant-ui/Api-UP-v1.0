@@ -1,4 +1,4 @@
-# UpSysteM API v1.0.9 — PostgreSQL/Supabase
+# UpSysteM API v1.0.10 — PostgreSQL/Supabase
 
 Esta API usa PostgreSQL/Supabase via `DATABASE_URL` e centraliza a validação da extensão, usuários, keys, sites e logs.
 
@@ -11,7 +11,7 @@ ADMIN_USERNAME=admiro
 ADMIN_PASSWORD=troque-essa-senha
 CORS_ORIGIN=*
 DATABASE_URL=postgresql://postgres.SEUPROJETO:SUA_SENHA@aws-1-us-west-2.pooler.supabase.com:6543/postgres
-MIN_EXTENSION_VERSION=1.0.9
+MIN_EXTENSION_VERSION=1.0.10
 REQUIRED_EXTENSION_BUILD=upsystem-v1-cleanbase-003
 MAX_LOGS=500
 LOG_RETENTION_DAYS=7
@@ -19,7 +19,7 @@ LOG_RETENTION_DAYS=7
 
 ## Logs
 
-A partir da v1.0.9, a API mantém as logs sob duas regras simultâneas:
+A partir da v1.0.10, a API mantém as logs sob duas regras simultâneas:
 
 - no máximo `MAX_LOGS` registros, padrão `500`;
 - retenção máxima de `LOG_RETENTION_DAYS` dias, padrão `7`.
@@ -47,13 +47,13 @@ Deve retornar algo semelhante a:
 {
   "ok": true,
   "service": "UpSysteM API",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "database": "postgresql"
 }
 ```
 
 ## Logs do Sistema
-A partir da v1.0.9, os erros técnicos são separados dos ciclos operacionais.
+A partir da v1.0.10, os erros técnicos são separados dos ciclos operacionais.
 
 Variáveis opcionais:
 
@@ -67,15 +67,15 @@ A API cria a tabela `upsystem_system_logs` automaticamente no PostgreSQL/Supabas
 
 ### Bloqueio por build da extensão
 
-Use `REQUIRED_EXTENSION_BUILD=upsystem-v1-cleanbase-003` no Render para bloquear versões antigas mesmo quando a numeração da versão for reduzida. A extensão DEV v1.0.9 envia o header `X-UpSystem-Build` em todas as chamadas online.
+Use `REQUIRED_EXTENSION_BUILD=upsystem-v1-cleanbase-003` no Render para bloquear versões antigas mesmo quando a numeração da versão for reduzida. A extensão DEV v1.0.10 envia o header `X-UpSystem-Build` em todas as chamadas online.
 
-## Atualização v1.0.9
+## Atualização v1.0.10
 
 - Exclusão em cascata controlada: ao excluir usuário pelo ADM, a API remove keys vinculadas/resgatadas por ele.
 - Reparação automática de keys órfãs: ao consultar keys, registros vinculados a usuários inexistentes são marcados como `inactive` com motivo administrativo.
 - Nova permissão interna `discord_integration`, reservada ao ADM para aba futura de Discord no Console.
 
-## Discord - preparação v1.0.9 BUILD003
+## Discord - preparação v1.0.10 BUILD003
 
 Variáveis esperadas no Render:
 
@@ -90,7 +90,7 @@ DISCORD_BOT_TOKEN=cole-o-token-apenas-no-render
 
 A rota `GET /discord/status` valida a presença das variáveis e informa o status ao Console sem exibir o token do bot.
 
-## Pagamentos - preparação Fase 1 e Fase 2 v1.0.9 BUILD003
+## Pagamentos - preparação Fase 1 e Fase 2 v1.0.10 BUILD003
 
 Estrutura preparada para Mercado Pago e PayPal, sem entrega automática de key nesta versão.
 
@@ -119,12 +119,12 @@ Rotas preparadas:
 
 Fase 3 permanece aguardando: Stripe, Paddle e Lemon Squeezy.
 
-ATUALIZAÇÃO v1.0.9 BUILD003:
+ATUALIZAÇÃO v1.0.10 BUILD003:
 - Corrigida restauração de último clique, próximo clique e tempo restante após fechar/deslogar/logar.
 - Cronômetro operacional agora é lido do storage persistente por usuário + site.
 - Logs operacionais repetidas são deduplicadas em janela curta para reduzir ruído.
 - Build obrigatório permanece upsystem-v1-cleanbase-003.
 
-## Atualização v1.0.9 BUILD003
+## Atualização v1.0.10 BUILD003
 - Versão mantida no build obrigatório `upsystem-v1-cleanbase-003`.
 - Esta atualização é focada na extensão: detecção de login do VivaStreet e tratamento de mensagens durante reload.
