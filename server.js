@@ -320,7 +320,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.1.2");
+  res.setHeader("X-UpSystem-API", "1.1.3");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -356,7 +356,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.1.2", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.1.3", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -1010,17 +1010,18 @@ async function sendDiscordDm(userId, content) {
 
 
 function defaultDiscordTemplates() {
-  const version = process.env.MIN_EXTENSION_VERSION || "1.1.2";
+  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "1.1.3";
   return [
-    { id: "donation_panel", name: "Painel de doação", buttonLabel: "Selecione um plano", title: "Comprar acesso UpSysteM", description: "Escolha seu plano e libere sua key de acesso.", body: `Status: {status}
-Versão: v${version}
+    { id: "donation_panel", name: "Painel de doação", buttonLabel: "Selecione um plano", title: "Painel de doação UpSysteM", description: "Escolha um plano de doação e abra sua sala de validação.", body: `🧩 Extensão UpSysteM
+{status}
+Versão pública: {version}
 
-O UpSysteM está preparado para liberar acesso por key após a confirmação do pagamento.`, plansText: `Planos disponíveis:
+Sua contribuição ajuda o projeto e libera a key da extensão após a confirmação da doação.`, plansText: `Planos de doação disponíveis:
 • Semanal
-• Mensal`, footer: "Selecione um plano no menu abaixo. A sala temporária será criada automaticamente para o Pix." },
+• Mensal`, footer: "Selecione um plano no menu abaixo para criar sua sala de validação da doação." },
     { id: "verification_panel", name: "Boas-vindas / Verificação", buttonLabel: "👍 VERIFICAR", title: "Verificação de conta!", description: "Olá! 👋", body: "Após a verificação, selecione o plano e tenha acesso!", plansText: "@everyone", footer: "Clique no botão VERIFICAR para receber o cargo user/verificado." },
-    { id: "payment_instructions", name: "Instruções de pagamento", buttonLabel: "Doar", title: "Como funciona a doação", description: "O pagamento padrão é Pix via QR Code.", body: "Selecione o plano no menu. O bot criará uma sala temporária de validação com QR Code Pix, copia e cola e link alternativo.", plansText: "Semanal ou Mensal.", footer: "Guarde a key com segurança." },
-    { id: "extension_info", name: "Informações da extensão", buttonLabel: "Doar", title: "UpSysteM Extension", description: "Automação com controle de acesso por key.", body: "A key libera o uso da extensão conforme o plano escolhido. O acesso é pessoal e vinculado às regras do sistema.", plansText: "Semanal e Mensal.", footer: "Suporte pelo servidor Discord." },
+    { id: "payment_instructions", name: "Instruções de doação", buttonLabel: "Doar", title: "Como funciona a doação", description: "A doação padrão é Pix via QR Code.", body: "Selecione o plano no menu. O bot criará uma sala temporária de validação da doação com botão para gerar o QR Code.", plansText: "Planos: Semanal ou Mensal.", footer: "Guarde sua key com segurança após a confirmação da doação." },
+    { id: "extension_info", name: "Informações da extensão", buttonLabel: "Doar", title: "UpSysteM Extension", description: "Automação com controle de acesso por key.", body: "A key libera o uso da extensão conforme o plano escolhido. O acesso é pessoal e vinculado às regras do sistema.", plansText: "Planos de doação: Semanal e Mensal.", footer: "Suporte pelo servidor Discord." },
     { id: "support_key", name: "Suporte/key", buttonLabel: "Doar", title: "Suporte de key", description: "Use este canal para orientações sobre ativação.", body: "Depois de receber sua key, informe-a na extensão para ativar o acesso. Se houver falha, procure o suporte.", plansText: "A key segue o plano escolhido na doação.", footer: "Não compartilhe sua key com terceiros." }
   ];
 }
@@ -1038,19 +1039,20 @@ function getDiscordTemplates(db) {
 const DISCORD_ASSETS_DIR = path.join(__dirname, "assets", "discord");
 const DISCORD_LOGO_FILE = "upsystem-logo.png";
 const DISCORD_BANNER_FILE = "upsystem-banner-verificacao.png";
+const DISCORD_DONATION_BANNER_FILE = "upsystem-banner-doacao.png";
 
 function discordAssetPath(fileName) {
   const file = path.join(DISCORD_ASSETS_DIR, fileName);
   return fs.existsSync(file) ? file : null;
 }
 
-function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.2"; }
+function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.3"; }
 
 function getExtensionRuntimeStatus(db = null) {
   const lastSeen = db?.meta?.extensionLastSeenAt ? Date.parse(db.meta.extensionLastSeenAt) : 0;
-  const hasRecentHeartbeat = lastSeen && Date.now() - lastSeen < 5 * 60 * 1000;
-  const online = true;
-  return { online, recentHeartbeat: Boolean(hasRecentHeartbeat), icon: online ? "🟢" : "🔴", label: online ? "Online" : "Offline", text: `${online ? "🟢" : "🔴"} Status: ${online ? "Online" : "Offline"}`, version: extensionVersionLabel() };
+  const hasRecentHeartbeat = Boolean(lastSeen && Date.now() - lastSeen < 5 * 60 * 1000);
+  const online = hasRecentHeartbeat;
+  return { online, recentHeartbeat: hasRecentHeartbeat, icon: online ? "🟢" : "🔴", label: online ? "Online" : "Offline", text: `${online ? "🟢" : "🔴"} Status: ${online ? "Online" : "Offline"}`, version: extensionVersionLabel(), lastSeenAt: lastSeen ? new Date(lastSeen).toISOString() : null };
 }
 
 function registerExtensionSeen(db, req) {
@@ -1068,13 +1070,47 @@ function templateToDiscordPayload(template, options = {}) {
   const isVerification = template?.id === "verification_panel";
   const isDonation = template?.id === "donation_panel";
   const runtime = getExtensionRuntimeStatus(options.db || null);
-  const title = String(template?.title || (isVerification ? "Verificação de conta!" : "Comprar acesso UpSysteM")).slice(0, 120);
-  const description = String(template?.description || (isVerification ? "Olá! 👋" : "Escolha seu plano e libere sua key de acesso.")).slice(0, 4000);
+  const title = String(template?.title || (isVerification ? "Verificação de conta!" : "Painel de doação UpSysteM")).slice(0, 120);
+  const description = String(template?.description || (isVerification ? "Olá! 👋" : "Escolha um plano de doação e abra sua sala de validação.")).slice(0, 4000);
   const bodyRaw = String(template?.body || "").replaceAll("{status}", runtime.text).replaceAll("{version}", `v${runtime.version}`).slice(0, 4000);
   const plansText = String(template?.plansText || (isVerification ? "@everyone" : "Planos disponíveis: Semanal e Mensal.")).slice(0, 1000);
   const footer = String(template?.footer || "UpSysteM • Acesso por key").slice(0, 1000);
-  if (isVerification) return { content: "@everyone", embeds: [{ author: { name: "UpSysteM", icon_url: `attachment://${DISCORD_LOGO_FILE}` }, title, description: bodyRaw || "Após a verificação, selecione o plano e tenha acesso!", color: 0x7c3aed, thumbnail: { url: `attachment://${DISCORD_LOGO_FILE}` }, image: { url: `attachment://${DISCORD_BANNER_FILE}` }, footer: { text: footer || "UpSysteM • Verificação de conta" } }], assetFiles: [DISCORD_LOGO_FILE, DISCORD_BANNER_FILE] };
-  if (isDonation) return { embeds: [{ author: { name: "UpSysteM", icon_url: `attachment://${DISCORD_LOGO_FILE}` }, title, description, color: 0x7c3aed, thumbnail: { url: `attachment://${DISCORD_LOGO_FILE}` }, fields: [{ name: "Informações da extensão", value: bodyRaw || `${runtime.text}\nVersão: v${runtime.version}`, inline: false }, { name: "Planos", value: plansText || `• Semanal\n• Mensal`, inline: false }, { name: "Importante", value: footer || "Selecione um plano no menu abaixo.", inline: false }], footer: { text: "UpSysteM • Compra com key de acesso" } }], assetFiles: [DISCORD_LOGO_FILE] };
+  if (isVerification) {
+    return {
+      content: "@everyone",
+      embeds: [{
+        author: { name: "UpSysteM", icon_url: `attachment://${DISCORD_LOGO_FILE}` },
+        title,
+        description: bodyRaw || "Após a verificação, selecione o plano e tenha acesso!",
+        color: 0x7c3aed,
+        thumbnail: { url: `attachment://${DISCORD_LOGO_FILE}` },
+        image: { url: `attachment://${DISCORD_BANNER_FILE}` },
+        footer: { text: footer || "UpSysteM • Verificação de conta" }
+      }],
+      assetFiles: [DISCORD_LOGO_FILE, DISCORD_BANNER_FILE]
+    };
+  }
+  if (isDonation) {
+    return {
+      embeds: [{
+        author: { name: "UpSysteM", icon_url: `attachment://${DISCORD_LOGO_FILE}` },
+        title,
+        description,
+        color: 0x7c3aed,
+        thumbnail: { url: `attachment://${DISCORD_LOGO_FILE}` },
+        image: { url: `attachment://${DISCORD_DONATION_BANNER_FILE}` },
+        fields: [
+          { name: "Informações da extensão", value: bodyRaw || `${runtime.text}
+Versão pública: v${runtime.version}`, inline: false },
+          { name: "Planos de doação", value: plansText || `• Semanal
+• Mensal`, inline: false },
+          { name: "Importante", value: footer || "Selecione um plano no menu abaixo.", inline: false }
+        ],
+        footer: { text: "UpSysteM • Painel de doação" }
+      }],
+      assetFiles: [DISCORD_LOGO_FILE, DISCORD_DONATION_BANNER_FILE]
+    };
+  }
   return { embeds: [{ title, description, color: 0x7c3aed, fields: [{ name: "Informações", value: bodyRaw || "-" }, { name: "Planos", value: plansText || "-" }, { name: "Importante", value: footer || "-" }], footer: { text: "UpSysteM • Discord" } }] };
 }
 
@@ -1145,11 +1181,49 @@ function ensureActivationKeyArray(db) {
   return db.activationKeys;
 }
 
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || "").trim());
+}
+
+function findLatestDiscordOrderForChannel(db, channelId, userId = null) {
+  const orders = Array.isArray(db?.discordOrders) ? db.discordOrders : [];
+  return orders.find((order) => String(order.validationChannelId || order.discordChannelId || "") === String(channelId || "") && (!userId || String(order.discordUserId || "") === String(userId)));
+}
+
+function buildValidationRoomPayload(order, db = null) {
+  const runtime = getExtensionRuntimeStatus(db);
+  return {
+    embeds: [{
+      author: { name: "UpSysteM", icon_url: `attachment://${DISCORD_LOGO_FILE}` },
+      title: "Validação da doação",
+      description: "Sua sala de validação foi criada. Revise o plano abaixo e clique no botão para informar seus dados e gerar o Pix.",
+      color: 0x7c3aed,
+      thumbnail: { url: `attachment://${DISCORD_LOGO_FILE}` },
+      image: { url: `attachment://${DISCORD_DONATION_BANNER_FILE}` },
+      fields: [
+        { name: "Plano selecionado", value: donationPlanLabel(order.plan), inline: true },
+        { name: "Valor da doação", value: `R$ ${Number(order.amount || 0).toFixed(2)}`, inline: true },
+        { name: "Status da extensão", value: `${runtime.icon} ${runtime.label} • v${runtime.version}`, inline: false },
+        { name: "Status da doação", value: "Aguardando dados do doador", inline: false }
+      ],
+      footer: { text: "Clique em GERAR DOAÇÃO para abrir o formulário e continuar." }
+    }],
+    components: [{
+      type: 1,
+      components: [{ type: 2, style: 1, custom_id: "upsystem_generate_donation", label: "💠 GERAR DOAÇÃO" }]
+    }],
+    assetFiles: [DISCORD_LOGO_FILE, DISCORD_DONATION_BANNER_FILE]
+  };
+}
+
 function buildDonationKey(db, order, payment = {}) {
   const keys = ensureActivationKeyArray(db);
   let code = shortKey();
   while (keys.some((item) => item.code === code)) code = shortKey();
   const username = order.discordUsername || order.discordDisplayName || "Discord";
+  const customerFirstName = String(order.customerFirstName || "").trim() || String(order.discordDisplayName || order.discordUsername || "Discord").slice(0,80);
+  const customerLastName = String(order.customerLastName || "").trim() || "Discord";
+  const customerEmail = String(order.customerEmail || "discord@upsystem.local").slice(0, 120);
   const key = {
     id: makeId("key"),
     code,
@@ -1159,9 +1233,9 @@ function buildDonationKey(db, order, payment = {}) {
     accessType: normalizeDonationPlan(order.plan),
     permissions: normalizePermissions("usuario"),
     note: "Key de agradecimento gerada automaticamente por doação via Discord/Mercado Pago.",
-    customerFirstName: String(username).slice(0, 80),
-    customerLastName: "Discord",
-    customerEmail: String(order.customerEmail || "discord@upsystem.local").slice(0, 120),
+    customerFirstName,
+    customerLastName,
+    customerEmail,
     createdBy: "discord",
     createdByRole: "system",
     status: "available",
@@ -1170,9 +1244,15 @@ function buildDonationKey(db, order, payment = {}) {
     source: "discord",
     donationId: order.id,
     paymentId: String(payment.id || order.paymentId || ""),
+    donationStatus: order.donationStatus || order.status || null,
+    donationAmount: order.amount || null,
+    donationPlan: order.plan || null,
     discordUserId: order.discordUserId || null,
     discordUsername: order.discordUsername || null,
-    discordDisplayName: order.discordDisplayName || null
+    discordDisplayName: order.discordDisplayName || null,
+    donorFirstName: customerFirstName,
+    donorLastName: customerLastName,
+    donorEmail: customerEmail
   };
   keys.push(key);
   return key;
@@ -1322,7 +1402,11 @@ function createPreparedOrder(body = {}, user = null) {
     discordDisplayName: String(body.discordDisplayName || "").slice(0, 120) || null,
     discordChannelId: String(body.discordChannelId || "").slice(0, 80) || null,
     discordGuildId: String(body.discordGuildId || "").slice(0, 80) || null,
-    customerEmail: String(body.customerEmail || "").slice(0, 180) || null,
+    validationChannelId: String(body.validationChannelId || "").slice(0, 80) || null,
+    validationChannelName: String(body.validationChannelName || "").slice(0, 120) || null,
+    customerFirstName: String(body.customerFirstName || body.donorFirstName || "").slice(0, 80) || null,
+    customerLastName: String(body.customerLastName || body.donorLastName || "").slice(0, 80) || null,
+    customerEmail: String(body.customerEmail || body.donorEmail || "").slice(0, 180) || null,
     paymentId: null,
     paymentStatus: "not_created",
     paymentUrl: null,
@@ -1723,8 +1807,8 @@ app.post("/discord/templates/send-panel", auth, async (req, res, next) => {
       }]
     }];
     const sent = await sendDiscordChannelPayload(channelId, payload);
-    await logDiscordEvent(`📌 Painel de compra/doação enviado no canal <#${channelId}> pelo Console.`);
-    res.json({ ok: true, message: "Painel enviado no canal configurado.", discordMessageId: sent.message?.id || null });
+    await logDiscordEvent(`📌 Painel de doação enviado no canal <#${channelId}> pelo Console.`);
+    res.json({ ok: true, message: "Painel de doação enviado no canal configurado.", discordMessageId: sent.message?.id || null });
   } catch (error) { next(error); }
 });
 
@@ -1948,7 +2032,7 @@ async function startDiscordBot() {
     return;
   }
 
-  const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ChannelType, PermissionFlagsBits } = discord;
+  const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ChannelType, PermissionFlagsBits, ModalBuilder, TextInputBuilder, TextInputStyle } = discord;
 
   const commands = [
     new SlashCommandBuilder()
@@ -1981,14 +2065,13 @@ async function startDiscordBot() {
 
     async function createDonationForInteraction(plan, sourceInteraction) {
       const amount = defaultDonationAmount(plan);
-      const email = `discord-${sourceInteraction.user.id}@upsystem.local`;
       const db = await readDb();
       const order = createPreparedOrder({
         provider: "mercadopago",
         currency: "BRL",
+        source: "discord_donation",
         plan,
         amount,
-        customerEmail: email,
         discordUserId: sourceInteraction.user.id,
         discordUsername: sourceInteraction.user.username,
         discordDisplayName: sourceInteraction.member?.displayName || sourceInteraction.user.globalName || sourceInteraction.user.username,
@@ -1996,37 +2079,22 @@ async function startDiscordBot() {
         discordGuildId: sourceInteraction.guildId
       }, { username: "discord" });
 
-      order.status = "aguardando_doacao";
-      order.donationStatus = "aguardando_doacao";
-      order.paymentStatus = "pix_created";
+      order.status = "aguardando_dados_doador";
+      order.donationStatus = "aguardando_dados_doador";
+      order.paymentStatus = "not_created";
       order.externalReference = order.id;
-      order.note = "Doação criada pelo painel Discord. Key será entregue após confirmação automática.";
-
-      if (mpConfig.enabled && mpConfig.configured) {
-        const payment = await createMercadoPagoPixPayment(order, mpConfig);
-        const transactionData = payment?.point_of_interaction?.transaction_data || {};
-        order.paymentId = String(payment.id || "");
-        order.paymentStatus = String(payment.status || "pending");
-        order.pixQrCode = transactionData.qr_code || null;
-        order.pixQrCodeBase64 = transactionData.qr_code_base64 || null;
-        order.pixTicketUrl = transactionData.ticket_url || null;
-        order.paymentUrl = transactionData.ticket_url || null;
-      } else {
-        order.paymentStatus = "test_pending";
-        order.pixQrCode = "PIX_TESTE_UPSYSTEM_V1_1_2_CONFIGURE_MERCADOPAGO_ACCESS_TOKEN";
-        order.pixTicketUrl = null;
-        order.paymentUrl = null;
-        order.note = "Fluxo Discord testado sem Mercado Pago ativo. Configure Mercado Pago para Pix real e confirmação automática.";
-      }
+      order.note = "Sala de validação criada. O QR Code será gerado após o apoiador informar nome, sobrenome e e-mail no modal.";
       order.updatedAt = nowIso();
       return { db, order };
     }
 
     async function sendPixToValidationChannel(channel, order) {
       const lines = [
-        `Olá <@${order.discordUserId}>. Sua doação foi criada.`,
+        `Olá <@${order.discordUserId}>. Sua doação foi preparada.`,
         `Plano: **${donationPlanLabel(order.plan)}**`,
         `Valor: **R$ ${Number(order.amount).toFixed(2)}**`,
+        `Doador: **${[order.customerFirstName, order.customerLastName].filter(Boolean).join(" ") || "Não informado"}**`,
+        `E-mail: **${order.customerEmail || "Não informado"}**`,
         "Status: aguardando confirmação da doação",
         "",
         "**Pagamento padrão: Pix QR Code**",
@@ -2073,13 +2141,13 @@ async function startDiscordBot() {
           const verified = memberHasDonationAccess(member, config);
           if (!verified) {
             const where = config.verifyChannelId ? ` Acesse <#${config.verifyChannelId}> e clique em Verificar.` : " Faça a verificação no canal indicado pelo servidor.";
-            await logDiscordEvent(`⛔ Compra bloqueada por falta de verificação. Usuário: <@${interaction.user.id}> · Plano: ${donationPlanLabel(plan)} · Canal: <#${interaction.channelId}>`);
-            return interaction.editReply({ content: `Você precisa se verificar antes de comprar.${where}`, components: [] });
+            await logDiscordEvent(`⛔ Doação bloqueada por falta de verificação. Usuário: <@${interaction.user.id}> · Plano: ${donationPlanLabel(plan)} · Canal: <#${interaction.channelId}>`);
+            return interaction.editReply({ content: `Você precisa se verificar antes de doar.${where}`, components: [] });
           }
         }
         const guild = interaction.guild;
         if (!guild) throw new Error("Servidor Discord não disponível para criar canal de validação.");
-        const channelName = `validacao-${discordSafeName(interaction.user.username)}-${Date.now().toString().slice(-5)}`;
+        const channelName = `doacao-${discordSafeName(interaction.user.username)}-${Date.now().toString().slice(-5)}`;
         const overwrites = [
           { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
           { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
@@ -2096,12 +2164,84 @@ async function startDiscordBot() {
         const { db, order } = await createDonationForInteraction(plan, interaction);
         order.validationChannelId = validationChannel.id;
         order.validationChannelName = validationChannel.name;
+        order.status = "aguardando_dados_doador";
+        order.donationStatus = "aguardando_dados_doador";
         db.discordOrders = [order, ...ensureDiscordOrderArray(db)].slice(0, 100);
         await writeDb(db);
-        await sendPixToValidationChannel(validationChannel, order);
-        await interaction.editReply({ content: `Sala de validação criada: <#${validationChannel.id}>. Conclua a doação por Pix nesse canal.` });
-        await logDiscordEvent(`🟡 Nova compra/doação criada pelo painel. Usuário: <@${interaction.user.id}> · Plano: ${donationPlanLabel(plan)} · Canal: <#${validationChannel.id}> · Status: aguardando_doacao`);
+        await sendDiscordChannelPayload(validationChannel.id, buildValidationRoomPayload(order, db));
+        await interaction.editReply({ content: `Sala de validação criada: <#${validationChannel.id}>. Clique no botão **💠 GERAR DOAÇÃO** dentro da sala para informar seus dados e gerar o Pix.` });
+        await logDiscordEvent(`🟡 Nova sala de validação criada. Usuário: <@${interaction.user.id}> · Plano: ${donationPlanLabel(plan)} · Canal: <#${validationChannel.id}> · Status: aguardando_dados_doador`);
         return;
+      }
+
+      if (interaction.isButton() && interaction.customId === "upsystem_generate_donation") {
+        const db = await readDb();
+        const order = findLatestDiscordOrderForChannel(db, interaction.channelId, interaction.user.id);
+        if (!order) return interaction.reply({ content: "Não encontrei uma doação pendente para esta sala.", ephemeral: true });
+        const modal = new ModalBuilder().setCustomId("upsystem_donation_details").setTitle("Dados do doador");
+        const firstNameInput = new TextInputBuilder().setCustomId("donor_first_name").setLabel("Nome").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80).setValue(String(order.customerFirstName || ""));
+        const lastNameInput = new TextInputBuilder().setCustomId("donor_last_name").setLabel("Sobrenome").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80).setValue(String(order.customerLastName || ""));
+        const emailInput = new TextInputBuilder().setCustomId("donor_email").setLabel("E-mail").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(120).setValue(String(order.customerEmail || ""));
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(firstNameInput),
+          new ActionRowBuilder().addComponents(lastNameInput),
+          new ActionRowBuilder().addComponents(emailInput)
+        );
+        await logDiscordEvent(`🧾 Modal de doação aberto. Usuário: <@${interaction.user.id}> · Sala: <#${interaction.channelId}> · Plano: ${donationPlanLabel(order.plan)}`);
+        return interaction.showModal(modal);
+      }
+
+      if (interaction.isModalSubmit() && interaction.customId === "upsystem_donation_details") {
+        await interaction.deferReply({ ephemeral: true });
+        const db = await readDb();
+        const order = findLatestDiscordOrderForChannel(db, interaction.channelId, interaction.user.id);
+        if (!order) return interaction.editReply({ content: "Não encontrei uma doação pendente para esta sala." });
+
+        const firstName = String(interaction.fields.getTextInputValue("donor_first_name") || "").trim();
+        const lastName = String(interaction.fields.getTextInputValue("donor_last_name") || "").trim();
+        const email = String(interaction.fields.getTextInputValue("donor_email") || "").trim().toLowerCase();
+        if (!firstName) return interaction.editReply({ content: "Informe o nome do doador." });
+        if (!lastName) return interaction.editReply({ content: "Informe o sobrenome do doador." });
+        if (!isValidEmail(email)) {
+          await logDiscordEvent(`⛔ E-mail inválido informado no modal de doação. Usuário: <@${interaction.user.id}> · Valor informado: ${truncateDiscordText(email, 60)}`);
+          return interaction.editReply({ content: "Informe um e-mail válido para gerar a doação." });
+        }
+
+        order.customerFirstName = firstName;
+        order.customerLastName = lastName;
+        order.customerEmail = email;
+        order.status = "dados_confirmados";
+        order.donationStatus = "dados_confirmados";
+        order.updatedAt = nowIso();
+
+        if (!order.pixQrCode) {
+          if (mpConfig.enabled && mpConfig.configured) {
+            const payment = await createMercadoPagoPixPayment(order, mpConfig);
+            const transactionData = payment?.point_of_interaction?.transaction_data || {};
+            order.paymentId = String(payment.id || "");
+            order.paymentStatus = String(payment.status || "pending");
+            order.pixQrCode = transactionData.qr_code || null;
+            order.pixQrCodeBase64 = transactionData.qr_code_base64 || null;
+            order.pixTicketUrl = transactionData.ticket_url || null;
+            order.paymentUrl = transactionData.ticket_url || null;
+          } else {
+            order.paymentStatus = "test_pending";
+            order.pixQrCode = "PIX_TESTE_UPSYSTEM_V1_1_3_CONFIGURE_MERCADOPAGO_ACCESS_TOKEN";
+            order.pixTicketUrl = null;
+            order.paymentUrl = null;
+            order.note = "Fluxo Discord testado sem Mercado Pago ativo. Configure Mercado Pago para Pix real e confirmação automática.";
+          }
+        }
+
+        order.status = "aguardando_doacao";
+        order.donationStatus = "aguardando_doacao";
+        order.updatedAt = nowIso();
+        await writeDb(db);
+
+        const targetChannel = interaction.channel;
+        if (targetChannel) await sendPixToValidationChannel(targetChannel, order);
+        await logDiscordEvent(`💸 Doação gerada por modal. Usuário: <@${interaction.user.id}> · Plano: ${donationPlanLabel(order.plan)} · Sala: <#${interaction.channelId}> · Status: ${order.paymentStatus}`);
+        return interaction.editReply({ content: "Dados recebidos. O QR Code Pix foi enviado na sala de validação." });
       }
 
       if (interaction.isChatInputCommand() && interaction.commandName === "doar") {
@@ -2116,7 +2256,18 @@ async function startDiscordBot() {
         context: { status: error.status || null, customId: interaction.customId || null, command: interaction.commandName || null }
       }).catch(() => null);
       await logDiscordEvent(`❌ Falha na interação Discord. Usuário: <@${interaction.user?.id || "desconhecido"}> · customId: ${interaction.customId || "-"} · Erro: ${error.message || "sem detalhe"}`);
-      const content = "Não foi possível iniciar a compra agora. O administrador foi avisado para verificar a integração.";
+      const isBotPermissionError = error?.code === 50013 || /Missing Permissions/i.test(String(error?.message || ""));
+      const content = isBotPermissionError
+        ? "A sala foi iniciada, mas o bot não tem alguma permissão necessária para concluir esta etapa. O administrador foi avisado para revisar permissões de canal/categoria, embeds, anexos ou mensagens."
+        : "Não foi possível iniciar a doação agora. O administrador foi avisado para verificar a integração.";
+      if (isBotPermissionError) {
+        await appendSystemLog({
+          level: "warning",
+          origin: "api.discord.permissions",
+          message: "Missing Permissions no fluxo de doação Discord.",
+          context: { customId: interaction.customId || null, channelId: interaction.channelId || null, userId: interaction.user?.id || null }
+        }).catch(() => null);
+      }
       if (interaction.deferred || interaction.replied) await interaction.editReply({ content, components: [] }).catch(() => null);
       else await interaction.reply({ content, ephemeral: true }).catch(() => null);
     }
@@ -2158,7 +2309,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.1.2",
+    version: "1.1.3",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
