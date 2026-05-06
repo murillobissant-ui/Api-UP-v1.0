@@ -44,6 +44,9 @@ const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
 const MAX_LOGS = Math.max(1, Number.parseInt(process.env.MAX_LOGS || "500", 10) || 500);
 const LOG_RETENTION_DAYS = Math.max(1, Number.parseInt(process.env.LOG_RETENTION_DAYS || "7", 10) || 7);
 const LOG_RETENTION_MS = LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+const DONATION_POLL_INTERVAL_MS = Math.max(5, Number.parseInt(process.env.UPSYSTEM_DONATION_POLL_INTERVAL_SECONDS || "10", 10) || 10) * 1000;
+const DONATION_POLL_TIMEOUT_MS = Math.max(1, Number.parseInt(process.env.UPSYSTEM_DONATION_POLL_TIMEOUT_MINUTES || "5", 10) || 5) * 60 * 1000;
+const activeDonationPolls = new Set();
 
 app.use(cors({ origin: CORS_ORIGIN === "*" ? true : CORS_ORIGIN, credentials: true }));
 app.use(express.json({ limit: "1mb" }));
@@ -324,7 +327,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.1.7");
+  res.setHeader("X-UpSystem-API", "1.1.8");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -360,7 +363,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.1.7", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.1.8", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -1172,7 +1175,7 @@ function donationPlanSelectRow() {
   };
 }
 
-function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.7"; }
+function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.8"; }
 
 function getExtensionRuntimeStatus(db = null) {
   const meta = db?.meta && typeof db.meta === "object" ? db.meta : {};
@@ -1619,10 +1622,31 @@ function findDonationOrder(db, externalReference, paymentId = null) {
   const orders = Array.isArray(db.discordOrders) ? db.discordOrders : [];
   const ref = String(externalReference || "").trim();
   const payId = String(paymentId || "").trim();
-  return orders.find((order) =>
-    (ref && (order.id === ref || order.externalReference === ref || order.mpPreferenceId === ref || order.paymentId === ref)) ||
-    (payId && String(order.paymentId || "") === payId)
-  );
+  return orders.find((order) => {
+    const candidates = [
+      order.id,
+      order.externalReference,
+      order.mpPreferenceId,
+      order.paymentId,
+      order.mercadoPagoPaymentId,
+      order.metadata?.upsystem_order_id
+    ].filter(Boolean).map(String);
+    return (ref && candidates.includes(ref)) || (payId && candidates.includes(payId));
+  });
+}
+
+function extractMercadoPagoPaymentId(req) {
+  const body = req.body || {};
+  const query = req.query || {};
+  const direct = body?.data?.id || body?.id || body?.resource_id || query?.id || query?.["data.id"] || query?.resource_id;
+  if (direct) return String(direct).trim();
+  const resource = String(body?.resource || query?.resource || "");
+  const match = resource.match(/(?:payments|payment)\/?(\d+)/i) || resource.match(/\b(\d{6,})\b/);
+  return match ? String(match[1]).trim() : "";
+}
+
+function upsertDiscordOrder(db, order) {
+  db.discordOrders = [order, ...ensureDiscordOrderArray(db).filter((item) => item.id !== order.id)].slice(0, 100);
 }
 
 async function createMercadoPagoPreference(order, config) {
@@ -1678,7 +1702,8 @@ async function createMercadoPagoPreference(order, config) {
 
 
 async function createMercadoPagoPixPayment(order, config) {
-  const notificationUrl = envText("MERCADOPAGO_NOTIFICATION_URL") || envText("MERCADOPAGO_WEBHOOK_URL") || "";
+  let notificationUrl = envText("MERCADOPAGO_NOTIFICATION_URL") || envText("MERCADOPAGO_WEBHOOK_URL") || "";
+  if (notificationUrl && !notificationUrl.includes("source_news=")) notificationUrl += (notificationUrl.includes("?") ? "&" : "?") + "source_news=webhooks";
   if (!order.customerEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(order.customerEmail)) {
     const error = new Error("Informe um e-mail válido para gerar Pix Mercado Pago.");
     error.status = 400;
@@ -1745,6 +1770,133 @@ async function fetchMercadoPagoPayment(paymentId, config) {
     throw error;
   }
   return data;
+}
+
+async function processMercadoPagoPaymentConfirmation(paymentId, source = "manual") {
+  const config = getPaymentConfig().mercadoPago;
+  if (!config.enabled || !config.configured) return { ok: false, reason: "mercadopago_disabled_or_unconfigured" };
+  const id = String(paymentId || "").trim();
+  if (!id) return { ok: false, reason: "missing_payment_id" };
+
+  const payment = await fetchMercadoPagoPayment(id, config);
+  const externalReference = String(payment.external_reference || payment.metadata?.upsystem_order_id || "").trim();
+  const db = await readDb();
+  const order = findDonationOrder(db, externalReference, id);
+
+  await appendSystemLog({
+    level: order ? "info" : "warning",
+    origin: `api.mercadopago.confirm.${source}`,
+    message: order ? "Consulta Mercado Pago vinculada à doação." : "Consulta Mercado Pago sem doação vinculada.",
+    context: { paymentId: id, externalReference, paymentStatus: payment.status || null, matched: Boolean(order) }
+  }).catch(() => null);
+
+  if (!order) {
+    await logDiscordEvent(`⚠️ Mercado Pago consultado, mas nenhuma doação foi vinculada. payment_id: ${id} · status: ${payment.status || "desconhecido"}`).catch(() => null);
+    return { ok: false, reason: "order_not_found", payment, externalReference };
+  }
+
+  order.paymentId = String(payment.id || id);
+  order.mercadoPagoPaymentId = String(payment.id || id);
+  order.paymentStatus = String(payment.status || "unknown");
+  order.mpStatusDetail = String(payment.status_detail || "");
+  order.externalReference = order.externalReference || order.id;
+  order.updatedAt = nowIso();
+
+  let finalized = null;
+  if (payment.status === "approved") {
+    finalized = await finalizeApprovedDonation(db, order, payment);
+    await logDiscordEvent(`✅ Doação aprovada via ${source}. Usuário: <@${order.discordUserId || "desconhecido"}> · Doação: ${order.id} · payment_id: ${id}`).catch(() => null);
+  } else if (["rejected", "cancelled", "canceled"].includes(String(payment.status || "").toLowerCase())) {
+    order.status = "doacao_cancelada";
+    order.donationStatus = "doacao_cancelada";
+    await logDiscordEvent(`🔴 Doação cancelada/rejeitada no Mercado Pago. Usuário: <@${order.discordUserId || "desconhecido"}> · Doação: ${order.id} · Status: ${payment.status}`).catch(() => null);
+  } else {
+    order.status = "aguardando_doacao";
+    order.donationStatus = "aguardando_doacao";
+  }
+
+  upsertDiscordOrder(db, order);
+  await writeDb(db);
+  return { ok: true, order, payment, finalized, approved: payment.status === "approved" };
+}
+
+async function expireDonationIfStillPending(orderId, paymentId, reason = "tempo_expirado") {
+  const db = await readDb();
+  const order = ensureDiscordOrderArray(db).find((item) => item.id === orderId || String(item.paymentId || "") === String(paymentId || ""));
+  if (!order) return { ok: false, reason: "order_not_found" };
+  if (order.keyCode || ["key_gerada", "key_entregue", "falha_dm_key_entregue_no_canal"].includes(String(order.donationStatus || order.status))) {
+    return { ok: true, skipped: true, reason: "already_finalized" };
+  }
+  order.status = "doacao_expirada";
+  order.donationStatus = "doacao_expirada";
+  order.paymentStatus = order.paymentStatus || "expired";
+  order.expiredAt = nowIso();
+  order.updatedAt = nowIso();
+  order.note = "Doação expirada por falta de confirmação dentro do prazo de 5 minutos.";
+  upsertDiscordOrder(db, order);
+  await writeDb(db);
+  if (order.validationChannelId) {
+    await sendDiscordChannelMessage(order.validationChannelId, "⏱️ Doação expirada. O QR Code não foi confirmado dentro do prazo. Gere uma nova doação para continuar.").catch(() => null);
+  }
+  await logDiscordEvent(`⏱️ Doação expirada sem confirmação. Usuário: <@${order.discordUserId || "desconhecido"}> · Doação: ${order.id} · payment_id: ${paymentId || "-"}`).catch(() => null);
+  return { ok: true, order, reason };
+}
+
+function startMercadoPagoDonationPolling(orderId, paymentId) {
+  const id = String(paymentId || "").trim();
+  const donationId = String(orderId || "").trim();
+  if (!id || !donationId) return;
+  const key = `${donationId}:${id}`;
+  if (activeDonationPolls.has(key)) return;
+  activeDonationPolls.add(key);
+  const startedAt = Date.now();
+  let attempts = 0;
+
+  const tick = async () => {
+    attempts += 1;
+    try {
+      const result = await processMercadoPagoPaymentConfirmation(id, "polling_10s");
+      if (result?.approved || result?.order?.keyCode) {
+        activeDonationPolls.delete(key);
+        await logDiscordEvent(`🟢 Polling Mercado Pago finalizado: doação confirmada. Doação: ${donationId} · payment_id: ${id} · tentativas: ${attempts}`).catch(() => null);
+        return;
+      }
+    } catch (error) {
+      await appendSystemLog({
+        level: "warning",
+        origin: "api.mercadopago.polling",
+        message: error.message || "Falha no polling Mercado Pago.",
+        context: { orderId: donationId, paymentId: id, attempts, status: error.status || null }
+      }).catch(() => null);
+    }
+
+    if (Date.now() - startedAt >= DONATION_POLL_TIMEOUT_MS) {
+      activeDonationPolls.delete(key);
+      await expireDonationIfStillPending(donationId, id, "polling_timeout").catch(() => null);
+      return;
+    }
+    setTimeout(tick, DONATION_POLL_INTERVAL_MS).unref?.();
+  };
+
+  setTimeout(tick, DONATION_POLL_INTERVAL_MS).unref?.();
+}
+
+async function startPendingDonationPollers() {
+  try {
+    const db = await readDb();
+    const now = Date.now();
+    const pending = ensureDiscordOrderArray(db).filter((order) => {
+      if (!order.paymentId || order.keyCode) return false;
+      const status = String(order.donationStatus || order.status || "").toLowerCase();
+      if (!["aguardando_doacao", "dados_confirmados"].includes(status)) return false;
+      const created = Date.parse(order.paymentCreatedAt || order.createdAt || order.updatedAt || "") || now;
+      return now - created < DONATION_POLL_TIMEOUT_MS;
+    });
+    pending.forEach((order) => startMercadoPagoDonationPolling(order.id, order.paymentId));
+    if (pending.length) await appendSystemLog({ level: "info", origin: "api.mercadopago.polling", message: `Polling Mercado Pago retomado para ${pending.length} doação(ões) pendente(s).` }).catch(() => null);
+  } catch (error) {
+    await appendSystemLog({ level: "warning", origin: "api.mercadopago.polling.start", message: error.message || "Falha ao retomar polling Mercado Pago." }).catch(() => null);
+  }
 }
 
 function requireDiscordAdmin(req, res) {
@@ -2125,89 +2277,68 @@ app.post("/payments/mercadopago/donation", auth, async (req, res, next) => {
 
 app.post("/webhooks/mercadopago", async (req, res) => {
   const config = getPaymentConfig().mercadoPago;
+  const paymentId = extractMercadoPagoPaymentId(req);
+  const eventType = String(req.body?.type || req.query?.type || "").trim();
+  const action = String(req.body?.action || req.query?.action || "").trim();
+
+  await appendSystemLog({
+    level: "info",
+    origin: "api.webhook.mercadopago",
+    message: "Webhook Mercado Pago recebido.",
+    context: { paymentId: paymentId || null, eventType, action, query: req.query || null, body: req.body || null }
+  }).catch(() => null);
+
+  // Mercado Pago exige resposta rápida. O processamento pesado fica em segundo plano.
+  res.status(200).json({ ok: true, received: true, paymentId: paymentId || null });
+
   if (!config.enabled || !config.configured) {
     await appendSystemLog({
       level: "info",
       origin: "api.webhook.mercadopago",
       message: "Webhook Mercado Pago recebido em modo preparado/desativado.",
-      context: { enabled: config.enabled, configured: config.configured, body: req.body || null }
+      context: { enabled: config.enabled, configured: config.configured }
     }).catch(() => null);
-    return res.status(202).json({ ok: true, ignored: true, reason: "mercadopago_disabled_or_unconfigured" });
+    return;
   }
 
-  try {
-    const paymentId = String(req.body?.data?.id || req.body?.id || req.query?.id || "").trim();
-    const eventType = String(req.body?.type || req.query?.type || "").trim();
-    const action = String(req.body?.action || "").trim();
-    if (!paymentId) {
-      await appendSystemLog({
-        level: "info",
-        origin: "api.webhook.mercadopago",
-        message: "Webhook Mercado Pago recebido sem payment id.",
-        context: { eventType, action, body: req.body || null }
-      }).catch(() => null);
-      return res.status(202).json({ ok: true, received: true, message: "Webhook recebido sem payment id." });
-    }
-
-    await logDiscordEvent(`📩 Webhook Mercado Pago recebido. payment_id: ${paymentId}`).catch(() => null);
-    const payment = await fetchMercadoPagoPayment(paymentId, config);
-    const externalReference = String(payment.external_reference || payment.metadata?.upsystem_order_id || "").trim();
-    const db = await readDb();
-    const order = findDonationOrder(db, externalReference, paymentId);
-
-    await appendSystemLog({
-      level: order ? "info" : "warning",
-      origin: "api.webhook.mercadopago",
-      message: order ? "Webhook Mercado Pago vinculado à doação." : "Webhook Mercado Pago sem doação vinculada.",
-      context: {
-        eventType,
-        action,
-        paymentId,
-        externalReference,
-        paymentStatus: payment.status || null,
-        matched: Boolean(order)
-      }
-    }).catch(() => null);
-
-    let finalized = null;
-    if (order) {
-      order.paymentId = String(payment.id || paymentId);
-      order.paymentStatus = String(payment.status || "unknown");
-      order.mpStatusDetail = String(payment.status_detail || "");
-      order.updatedAt = nowIso();
-
-      if (payment.status === "approved") {
-        finalized = await finalizeApprovedDonation(db, order, payment);
-        await logDiscordEvent(`✅ Doação aprovada via Mercado Pago. Usuário: <@${order.discordUserId || "desconhecido"}> · Doação: ${order.id} · payment_id: ${paymentId}`).catch(() => null);
-      } else {
-        order.status = "aguardando_doacao";
-        order.donationStatus = "aguardando_doacao";
-        db.discordOrders = [order, ...ensureDiscordOrderArray(db).filter((item) => item.id !== order.id)].slice(0, 100);
-      }
-
-      await writeDb(db);
-    }
-
-    return res.status(202).json({
-      ok: true,
-      received: true,
-      paymentId,
-      externalReference,
-      matched: Boolean(order),
-      status: payment.status || null,
-      keyGenerated: Boolean(finalized?.key),
-      deliveryStatus: finalized?.order?.deliveryStatus || null
-    });
-  } catch (error) {
+  if (!paymentId) {
     await appendSystemLog({
       level: "warning",
       origin: "api.webhook.mercadopago",
-      message: error.message || "Falha ao processar webhook Mercado Pago.",
-      context: { body: req.body || null, status: error.status || null }
+      message: "Webhook Mercado Pago recebido sem payment id.",
+      context: { eventType, action }
     }).catch(() => null);
-    return res.status(202).json({ ok: false, received: true, error: error.message || "Falha ao processar webhook." });
+    return;
   }
+
+  setImmediate(async () => {
+    try {
+      await logDiscordEvent(`📩 Webhook Mercado Pago recebido. payment_id: ${paymentId}`).catch(() => null);
+      await processMercadoPagoPaymentConfirmation(paymentId, "webhook");
+    } catch (error) {
+      await appendSystemLog({
+        level: "warning",
+        origin: "api.webhook.mercadopago.async",
+        message: error.message || "Falha ao processar webhook Mercado Pago em segundo plano.",
+        context: { paymentId, eventType, action, status: error.status || null }
+      }).catch(() => null);
+      await logDiscordEvent(`❌ Falha ao processar webhook Mercado Pago. payment_id: ${paymentId} · Erro: ${error.message || "sem detalhe"}`).catch(() => null);
+    }
+  });
 });
+
+app.post("/discord/orders/:id/check-payment", auth, async (req, res, next) => {
+  try {
+    if (!requirePaymentsAdmin(req, res)) return;
+    const id = String(req.params.id || "").trim();
+    const order = ensureDiscordOrderArray(req.db).find((item) => item.id === id || String(item.paymentId || "") === id);
+    if (!order) return res.status(404).json({ error: "Doação não encontrada." });
+    if (!order.paymentId) return res.status(400).json({ error: "Doação ainda não possui payment_id Mercado Pago." });
+    const result = await processMercadoPagoPaymentConfirmation(order.paymentId, "manual_console");
+    res.json({ ok: true, approved: Boolean(result.approved), order: result.order || null, paymentStatus: result.payment?.status || null, keyGenerated: Boolean(result.finalized?.key || result.order?.keyCode) });
+  } catch (error) { next(error); }
+});
+
 
 app.post("/webhooks/paypal", async (req, res) => {
   const config = getPaymentConfig().paypal;
@@ -2478,6 +2609,10 @@ ${order.pixTicketUrl}`, ephemeral: true });
             const payment = await createMercadoPagoPixPayment(order, mpConfig);
             const transactionData = payment?.point_of_interaction?.transaction_data || {};
             order.paymentId = String(payment.id || "");
+            order.mercadoPagoPaymentId = String(payment.id || "");
+            order.paymentCreatedAt = nowIso();
+            order.pollingIntervalSeconds = Math.round(DONATION_POLL_INTERVAL_MS / 1000);
+            order.pollingTimeoutMinutes = Math.round(DONATION_POLL_TIMEOUT_MS / 60000);
             order.paymentStatus = String(payment.status || "pending");
             order.pixQrCode = transactionData.qr_code || null;
             order.pixQrCodeBase64 = transactionData.qr_code_base64 || null;
@@ -2500,6 +2635,10 @@ ${order.pixTicketUrl}`, ephemeral: true });
         const targetChannel = interaction.channel;
         if (targetChannel) await sendPixToValidationChannel(targetChannel, order);
         await logDiscordEvent(`💸 QR Code Pix gerado. Usuário: <@${interaction.user.id}> · Plano: ${donationPlanLabel(order.plan)} · Sala: <#${interaction.channelId}> · Status: ${order.paymentStatus} · Doação: ${order.id}`);
+        if (order.paymentId && mpConfig.enabled && mpConfig.configured) {
+          startMercadoPagoDonationPolling(order.id, order.paymentId);
+          await logDiscordEvent(`🔎 Verificação automática iniciada: a cada ${Math.round(DONATION_POLL_INTERVAL_MS / 1000)}s por até ${Math.round(DONATION_POLL_TIMEOUT_MS / 60000)}min. Doação: ${order.id} · payment_id: ${order.paymentId}`).catch(() => null);
+        }
         return interaction.editReply({ content: "Dados recebidos. O QR Code Pix foi enviado na sala de validação." });
       }
 
@@ -2568,7 +2707,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.1.7",
+    version: "1.1.8",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
@@ -2671,6 +2810,7 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
   console.log(`UpSysteM API online na porta ${PORT}`);
+  startPendingDonationPollers().catch(() => null);
   startDiscordBot().catch((error) => {
     console.error("Falha ao iniciar bot Discord:", error);
     appendSystemLog({
