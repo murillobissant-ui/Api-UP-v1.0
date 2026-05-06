@@ -216,6 +216,14 @@ async function ensureSchema() {
   `);
 
   await db.query(`
+    CREATE TABLE IF NOT EXISTS upsystem_meta (
+      id TEXT PRIMARY KEY,
+      data JSONB NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+
+  await db.query(`
     CREATE INDEX IF NOT EXISTS idx_upsystem_logs_created_at
     ON upsystem_logs (created_at DESC)
   `);
@@ -347,7 +355,7 @@ async function readDb() {
   await ensureSchema();
   const db = getPool();
 
-  const [users, keys, sites, logs, systemLogs, discordOrders, discordTemplates] = await Promise.all([
+  const [users, keys, sites, logs, systemLogs, discordOrders, discordTemplates, metaRows] = await Promise.all([
     db.query("SELECT data FROM upsystem_users ORDER BY updated_at ASC"),
     db.query("SELECT data FROM upsystem_activation_keys ORDER BY updated_at ASC"),
     db.query("SELECT data FROM upsystem_sites ORDER BY id ASC"),
@@ -366,7 +374,8 @@ async function readDb() {
       [MAX_SYSTEM_LOGS, SYSTEM_LOG_RETENTION_DAYS]
     ),
     db.query("SELECT data FROM upsystem_discord_orders ORDER BY created_at DESC LIMIT 100"),
-    db.query("SELECT data FROM upsystem_discord_templates ORDER BY updated_at DESC LIMIT 50")
+    db.query("SELECT data FROM upsystem_discord_templates ORDER BY updated_at DESC LIMIT 50"),
+    db.query("SELECT data FROM upsystem_meta WHERE id = 'global' LIMIT 1")
   ]);
 
   return {
@@ -376,7 +385,8 @@ async function readDb() {
     logs: logs.rows.map(rowData).reverse(),
     systemLogs: systemLogs.rows.map(rowData).reverse(),
     discordOrders: discordOrders.rows.map(rowData),
-    discordTemplates: discordTemplates.rows.map(rowData)
+    discordTemplates: discordTemplates.rows.map(rowData),
+    meta: metaRows.rows[0] ? rowData(metaRows.rows[0]) : {}
   };
 }
 
@@ -484,6 +494,15 @@ async function writeDb(state) {
          VALUES ($1, $2::jsonb, NOW())
          ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
         [template.id, JSON.stringify(template)]
+      );
+    }
+
+    if (state.meta && typeof state.meta === "object") {
+      await client.query(
+        `INSERT INTO upsystem_meta (id, data, updated_at)
+         VALUES ('global', $1::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        [JSON.stringify(state.meta)]
       );
     }
 

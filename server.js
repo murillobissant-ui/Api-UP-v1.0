@@ -320,7 +320,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.1.3");
+  res.setHeader("X-UpSystem-API", "1.1.4");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -356,15 +356,30 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.1.3", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.1.4", database: "postgresql" });
   } catch (error) {
     next(error);
   }
 });
 
 app.get("/extension/status", auth, async (req, res, next) => {
-  try { registerExtensionSeen(req.db, req); await writeDb(req.db); res.json({ ok: true, extension: getExtensionRuntimeStatus(req.db) }); }
+  try { registerExtensionSeen(req.db, req, "status"); await writeDb(req.db); res.json({ ok: true, extension: getExtensionRuntimeStatus(req.db) }); }
   catch (error) { next(error); }
+});
+
+app.post("/extension/heartbeat", async (req, res, next) => {
+  try {
+    const db = await readDb();
+    registerExtensionSeen(db, req, "heartbeat");
+    db.meta = db.meta && typeof db.meta === "object" ? db.meta : {};
+    db.meta.extensionHeartbeatCount = Number(db.meta.extensionHeartbeatCount || 0) + 1;
+    db.meta.extensionLastDeviceId = String(req.body?.deviceId || "").slice(0, 120) || db.meta.extensionLastDeviceId || null;
+    db.meta.extensionLastUserId = String(req.body?.userId || "").slice(0, 120) || db.meta.extensionLastUserId || null;
+    await writeDb(db);
+    const extension = getExtensionRuntimeStatus(db);
+    await logDiscordEvent(`💓 Heartbeat da extensão recebido. Status calculado: ${extension.icon} ${extension.label} · Versão: v${extension.version}`).catch(() => null);
+    res.json({ ok: true, status: extension.label.toLowerCase(), extension });
+  } catch (error) { next(error); }
 });
 
 app.post("/auth/login", async (req, res, next) => {
@@ -393,7 +408,7 @@ app.post("/auth/login", async (req, res, next) => {
     user.updatedAt = nowIso();
     writeDb(db);
 
-    registerExtensionSeen(db, req);
+    registerExtensionSeen(db, req, "auth");
     await writeDb(db);
     res.json({ token: sign(user), user: publicUser(user) });
   } catch (e) {
@@ -1010,7 +1025,7 @@ async function sendDiscordDm(userId, content) {
 
 
 function defaultDiscordTemplates() {
-  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "1.1.3";
+  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "1.1.4";
   return [
     { id: "donation_panel", name: "Painel de doação", buttonLabel: "Selecione um plano", title: "Painel de doação UpSysteM", description: "Escolha um plano de doação e abra sua sala de validação.", body: `🧩 Extensão UpSysteM
 {status}
@@ -1046,23 +1061,46 @@ function discordAssetPath(fileName) {
   return fs.existsSync(file) ? file : null;
 }
 
-function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.3"; }
+function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.4"; }
 
 function getExtensionRuntimeStatus(db = null) {
-  const lastSeen = db?.meta?.extensionLastSeenAt ? Date.parse(db.meta.extensionLastSeenAt) : 0;
-  const hasRecentHeartbeat = Boolean(lastSeen && Date.now() - lastSeen < 5 * 60 * 1000);
+  const meta = db?.meta && typeof db.meta === "object" ? db.meta : {};
+  const candidates = [
+    meta.extensionLastSeenAt,
+    meta.extensionLastAuthAt,
+    meta.extensionLastApiAt,
+    meta.extensionLastHeartbeatAt
+  ].filter(Boolean).map((value) => Date.parse(value)).filter((value) => Number.isFinite(value));
+  const lastSeen = candidates.length ? Math.max(...candidates) : 0;
+  const maxAgeMinutes = Math.max(1, Number.parseInt(process.env.UPSYSTEM_EXTENSION_ONLINE_WINDOW_MINUTES || "30", 10) || 30);
+  const hasRecentHeartbeat = Boolean(lastSeen && Date.now() - lastSeen < maxAgeMinutes * 60 * 1000);
   const online = hasRecentHeartbeat;
-  return { online, recentHeartbeat: hasRecentHeartbeat, icon: online ? "🟢" : "🔴", label: online ? "Online" : "Offline", text: `${online ? "🟢" : "🔴"} Status: ${online ? "Online" : "Offline"}`, version: extensionVersionLabel(), lastSeenAt: lastSeen ? new Date(lastSeen).toISOString() : null };
+  return {
+    online,
+    recentHeartbeat: hasRecentHeartbeat,
+    icon: online ? "🟢" : "🔴",
+    label: online ? "Online" : "Offline",
+    text: `${online ? "🟢" : "🔴"} Status: ${online ? "Online" : "Offline"}`,
+    version: extensionVersionLabel(),
+    lastSeenAt: lastSeen ? new Date(lastSeen).toISOString() : null,
+    windowMinutes: maxAgeMinutes
+  };
 }
 
-function registerExtensionSeen(db, req) {
+function registerExtensionSeen(db, req, source = "api") {
   try {
-    const clientVersion = String(req.get("X-UpSystem-Version") || "").trim();
-    const clientBuild = String(req.get("X-UpSystem-Build") || "").trim();
+    const clientVersion = String(req.get("X-UpSystem-Version") || req.body?.version || "").trim();
+    const clientBuild = String(req.get("X-UpSystem-Build") || req.body?.build || "").trim();
+    const clientSource = String(req.get("X-UpSystem-Client") || req.body?.source || source || "extension").trim();
     db.meta = db.meta && typeof db.meta === "object" ? db.meta : {};
-    db.meta.extensionLastSeenAt = nowIso();
+    const now = nowIso();
+    db.meta.extensionLastSeenAt = now;
+    db.meta.extensionLastApiAt = now;
+    if (source === "heartbeat") db.meta.extensionLastHeartbeatAt = now;
+    if (source === "auth") db.meta.extensionLastAuthAt = now;
     if (clientVersion) db.meta.extensionLastVersion = clientVersion;
     if (clientBuild) db.meta.extensionLastBuild = clientBuild;
+    db.meta.extensionLastSource = clientSource || source;
   } catch (_) {}
 }
 
@@ -1112,6 +1150,48 @@ Versão pública: v${runtime.version}`, inline: false },
     };
   }
   return { embeds: [{ title, description, color: 0x7c3aed, fields: [{ name: "Informações", value: bodyRaw || "-" }, { name: "Planos", value: plansText || "-" }, { name: "Importante", value: footer || "-" }], footer: { text: "UpSysteM • Discord" } }] };
+}
+
+function saveDiscordPanelMeta(db, kind, sent, channelId, templateId, user = null) {
+  db.meta = db.meta && typeof db.meta === "object" ? db.meta : {};
+  const key = kind === "verification" ? "discordVerificationPanel" : "discordDonationPanel";
+  db.meta[key] = {
+    messageId: sent?.message?.id || sent?.id || null,
+    channelId: String(channelId || ""),
+    templateId: String(templateId || ""),
+    createdAt: db.meta[key]?.createdAt || nowIso(),
+    updatedAt: nowIso(),
+    sentBy: user?.username || "console"
+  };
+}
+
+async function editDiscordMessagePayload(channelId, messageId, payload = {}) {
+  const config = getDiscordConfig();
+  if (!config.tokenPresent || !channelId || !messageId) return { ok: false, skipped: true };
+  const endpoint = `https://discord.com/api/v10/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}`;
+  const assetFiles = Array.isArray(payload.assetFiles) ? payload.assetFiles : [];
+  const cleanPayload = { ...payload };
+  delete cleanPayload.assetFiles;
+  const resolvedFiles = assetFiles.map((name) => ({ name, path: discordAssetPath(name) })).filter((file) => file.path);
+  let response;
+  if (resolvedFiles.length) {
+    const form = new FormData();
+    form.append("payload_json", JSON.stringify(cleanPayload));
+    resolvedFiles.forEach((file, index) => {
+      const bytes = fs.readFileSync(file.path);
+      form.append(`files[${index}]`, new Blob([bytes], { type: "image/png" }), file.name);
+    });
+    response = await fetch(endpoint, { method: "PATCH", headers: { Authorization: `Bot ${config.token}` }, body: form });
+  } else {
+    response = await fetch(endpoint, { method: "PATCH", headers: { Authorization: `Bot ${config.token}`, "Content-Type": "application/json" }, body: JSON.stringify(cleanPayload) });
+  }
+  const body = await response.json().catch(async () => ({ raw: await response.text().catch(() => "") }));
+  if (!response.ok) {
+    const error = new Error(`Falha ao editar painel Discord (${response.status}). ${JSON.stringify(body).slice(0, 300)}`);
+    error.status = response.status;
+    throw error;
+  }
+  return { ok: true, message: body };
 }
 
 async function sendDiscordChannelPayload(channelId, payload = {}) {
@@ -1807,8 +1887,10 @@ app.post("/discord/templates/send-panel", auth, async (req, res, next) => {
       }]
     }];
     const sent = await sendDiscordChannelPayload(channelId, payload);
-    await logDiscordEvent(`📌 Painel de doação enviado no canal <#${channelId}> pelo Console.`);
-    res.json({ ok: true, message: "Painel de doação enviado no canal configurado.", discordMessageId: sent.message?.id || null });
+    saveDiscordPanelMeta(req.db, "donation", sent, channelId, templateId, req.user);
+    await writeDb(req.db);
+    await logDiscordEvent(`📌 Painel de doação enviado no canal <#${channelId}> pelo Console. Message ID: ${sent.message?.id || "-"}`);
+    res.json({ ok: true, message: "Painel de doação enviado no canal configurado.", discordMessageId: sent.message?.id || null, panel: req.db.meta.discordDonationPanel });
   } catch (error) { next(error); }
 });
 
@@ -1826,8 +1908,45 @@ app.post("/discord/templates/send-verify-panel", auth, async (req, res, next) =>
       components: [{ type: 2, style: 3, custom_id: "upsystem_verify_user", label: template.buttonLabel || "👍 VERIFICAR" }]
     }];
     const sent = await sendDiscordChannelPayload(channelId, payload);
-    await logDiscordEvent(`📌 Painel de verificação enviado no canal <#${channelId}> pelo Console.`);
-    res.json({ ok: true, message: "Painel de verificação enviado no canal configurado.", discordMessageId: sent.message?.id || null });
+    saveDiscordPanelMeta(req.db, "verification", sent, channelId, "verification_panel", req.user);
+    await writeDb(req.db);
+    await logDiscordEvent(`📌 Painel de verificação enviado no canal <#${channelId}> pelo Console. Message ID: ${sent.message?.id || "-"}`);
+    res.json({ ok: true, message: "Painel de verificação enviado no canal configurado.", discordMessageId: sent.message?.id || null, panel: req.db.meta.discordVerificationPanel });
+  } catch (error) { next(error); }
+});
+
+app.post("/discord/templates/update-donation-panel", auth, async (req, res, next) => {
+  try {
+    if (!requireDiscordAdmin(req, res)) return;
+    const config = getDiscordConfig(req.db);
+    if (!config.tokenPresent) return res.status(400).json({ error: "Token do bot não configurado." });
+    const panel = req.db.meta?.discordDonationPanel || {};
+    const channelId = String(req.body?.channelId || panel.channelId || config.panelChannelId || config.salesChannelId || "").trim();
+    const messageId = String(req.body?.messageId || panel.messageId || "").trim();
+    if (!channelId) return res.status(400).json({ error: "Canal de doações não configurado." });
+    if (!messageId) return res.status(400).json({ error: "Nenhum painel de doação salvo para editar. Reenvie o painel pelo Console primeiro." });
+    const template = getDiscordTemplates(req.db).find((tpl) => tpl.id === "donation_panel") || getDiscordTemplates(req.db)[0];
+    const payload = templateToDiscordPayload(template, { db: req.db });
+    payload.components = [{
+      type: 1,
+      components: [{
+        type: 3,
+        custom_id: "upsystem_donation_plan",
+        placeholder: template.buttonLabel || "Selecione um plano",
+        min_values: 1,
+        max_values: 1,
+        options: [
+          { label: "Semanal", value: "weekly", description: "Key de acesso semanal" },
+          { label: "Mensal", value: "monthly", description: "Key de acesso mensal" }
+        ]
+      }]
+    }];
+    const edited = await editDiscordMessagePayload(channelId, messageId, payload);
+    saveDiscordPanelMeta(req.db, "donation", { message: { id: messageId } }, channelId, "donation_panel", req.user);
+    await writeDb(req.db);
+    const runtime = getExtensionRuntimeStatus(req.db);
+    await logDiscordEvent(`🔁 Painel de doação editado. Canal: <#${channelId}> · Status: ${runtime.icon} ${runtime.label}`);
+    res.json({ ok: true, message: "Painel de doação atualizado.", panel: req.db.meta.discordDonationPanel, extension: runtime, discordMessageId: messageId });
   } catch (error) { next(error); }
 });
 
@@ -2309,7 +2428,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.1.3",
+    version: "1.1.4",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
