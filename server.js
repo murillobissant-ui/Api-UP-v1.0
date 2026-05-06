@@ -324,7 +324,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.1.6");
+  res.setHeader("X-UpSystem-API", "1.1.7");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -360,7 +360,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.1.6", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.1.7", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -1029,7 +1029,7 @@ async function sendDiscordDm(userId, content) {
 
 
 function defaultDiscordTemplates() {
-  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "1.1.6";
+  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "1.1.7";
   return [
     { id: "donation_panel", name: "Painel de doação", buttonLabel: "💠 DOAR", title: "Painel de doação UpSysteM", description: "Escolha um plano de doação e abra sua sala de validação.", body: `🧩 Extensão UpSysteM
 {status}
@@ -1146,13 +1146,33 @@ function buildDonationGeneratedEmbed(order) {
 }
 
 function donationActionButtons() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("upsystem_donation_link").setLabel("LINK DA DOAÇÃO").setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId("upsystem_donation_pix").setLabel("PIX COPIA E COLA").setStyle(ButtonStyle.Success)
-  );
+  return {
+    type: 1,
+    components: [
+      { type: 2, style: 3, custom_id: "upsystem_donation_link", label: "LINK DA DOAÇÃO" },
+      { type: 2, style: 3, custom_id: "upsystem_donation_pix", label: "PIX COPIA E COLA" }
+    ]
+  };
 }
 
-function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.6"; }
+function donationPlanSelectRow() {
+  return {
+    type: 1,
+    components: [{
+      type: 3,
+      custom_id: "upsystem_donation_plan",
+      placeholder: "Selecione seu plano de doação",
+      min_values: 1,
+      max_values: 1,
+      options: [
+        { label: "Semanal", value: "weekly", description: "Key de acesso semanal" },
+        { label: "Mensal", value: "monthly", description: "Key de acesso mensal" }
+      ]
+    }]
+  };
+}
+
+function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.7"; }
 
 function getExtensionRuntimeStatus(db = null) {
   const meta = db?.meta && typeof db.meta === "object" ? db.meta : {};
@@ -2548,7 +2568,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.1.6",
+    version: "1.1.7",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
