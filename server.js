@@ -318,7 +318,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.0.7");
+  res.setHeader("X-UpSystem-API", "1.0.8");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -354,7 +354,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.0.7", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.0.8", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -852,7 +852,7 @@ function getPaymentConfig() {
       lemonSqueezy: "aguardando"
     },
     prepared: true,
-    message: "Pagamentos preparados para Mercado Pago e PayPal. Nenhuma cobrança real é criada nesta versão."
+    message: "Doações preparadas para Mercado Pago e PayPal. Nenhuma key é gerada automaticamente nesta etapa."
   };
 }
 
@@ -887,38 +887,118 @@ function requirePaymentsAdmin(req, res) {
   return true;
 }
 
-function normalizeOrderPlan(plan) {
-  return ["weekly", "monthly", "lifetime"].includes(plan) ? plan : "monthly";
+function normalizeDonationPlan(plan) {
+  return ["weekly", "monthly"].includes(plan) ? plan : "monthly";
+}
+
+function donationPlanLabel(plan) {
+  return normalizeDonationPlan(plan) === "weekly" ? "Semanal" : "Mensal";
 }
 
 function normalizePaymentProvider(provider) {
   return ["mercadopago", "paypal"].includes(provider) ? provider : "mercadopago";
 }
 
+function normalizeDonationAmount(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  return Math.round(amount * 100) / 100;
+}
+
 function createPreparedOrder(body = {}, user = null) {
   const provider = normalizePaymentProvider(String(body.provider || body.paymentProvider || "mercadopago").toLowerCase());
-  const plan = normalizeOrderPlan(String(body.plan || "monthly").toLowerCase());
+  const plan = normalizeDonationPlan(String(body.plan || "monthly").toLowerCase());
   const currency = String(body.currency || (provider === "paypal" ? "USD" : "BRL")).toUpperCase().slice(0, 10);
-  const amount = Number(body.amount || 0);
+  const amount = normalizeDonationAmount(body.amount);
   return {
-    id: makeId("discord-order"),
-    source: "discord",
-    status: "prepared",
+    id: makeId("donation"),
+    source: "discord_donation",
+    status: "preparada",
+    donationStatus: "preparada",
     provider,
     plan,
     currency,
-    amount: Number.isFinite(amount) && amount > 0 ? amount : null,
+    amount,
     discordUserId: String(body.discordUserId || "").slice(0, 80) || null,
     discordUsername: String(body.discordUsername || "").slice(0, 120) || null,
     customerEmail: String(body.customerEmail || "").slice(0, 180) || null,
     paymentId: null,
     paymentStatus: "not_created",
+    paymentUrl: null,
     keyCode: null,
-    note: "Pedido preparado. Pagamento real e geração automática serão ativados em etapa posterior.",
+    note: "Doação preparada. A geração automática da key será ativada em etapa posterior.",
     createdBy: user?.username || null,
     createdAt: nowIso(),
     updatedAt: nowIso()
   };
+}
+
+function findDonationOrder(db, externalReference) {
+  const orders = Array.isArray(db.discordOrders) ? db.discordOrders : [];
+  return orders.find((order) => order.id === externalReference || order.externalReference === externalReference || order.mpPreferenceId === externalReference);
+}
+
+async function createMercadoPagoPreference(order, config) {
+  const notificationUrl = envText("MERCADOPAGO_NOTIFICATION_URL") || envText("MERCADOPAGO_WEBHOOK_URL") || "";
+  const payload = {
+    external_reference: order.id,
+    metadata: {
+      upsystem_order_id: order.id,
+      source: "upsystem_discord_donation",
+      plan: order.plan
+    },
+    items: [
+      {
+        id: `upsystem-${order.plan}`,
+        title: `Doação UpSysteM - Key ${donationPlanLabel(order.plan)}`,
+        description: "Contribuição voluntária com key de acesso como agradecimento.",
+        quantity: 1,
+        currency_id: order.currency || "BRL",
+        unit_price: order.amount
+      }
+    ],
+    payer: {
+      email: order.customerEmail || undefined
+    },
+    back_urls: {},
+    statement_descriptor: "UPSYSTEM"
+  };
+
+  if (notificationUrl) payload.notification_url = notificationUrl;
+
+  const response = await fetch("https://api.mercadopago.com/checkout/preferences", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${config.accessToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = data?.message || data?.error || `Falha ao criar preferência Mercado Pago (${response.status}).`;
+    const error = new Error(message);
+    error.status = response.status;
+    error.details = data;
+    throw error;
+  }
+
+  return data;
+}
+
+async function fetchMercadoPagoPayment(paymentId, config) {
+  const response = await fetch(`https://api.mercadopago.com/v1/payments/${encodeURIComponent(paymentId)}`, {
+    headers: { Authorization: `Bearer ${config.accessToken}` }
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(data?.message || data?.error || `Falha ao consultar pagamento Mercado Pago (${response.status}).`);
+    error.status = response.status;
+    error.details = data;
+    throw error;
+  }
+  return data;
 }
 
 function requireDiscordAdmin(req, res) {
@@ -965,7 +1045,7 @@ function getPublicDiscordStatus(config = getDiscordConfig()) {
     logChannelId: config.logChannelId || null,
     mode: config.enabled ? "ready_to_connect" : "prepared_disabled",
     message: config.enabled
-      ? "Discord configurado para futura ativação. Nenhum comando de venda foi iniciado nesta versão."
+      ? "Discord configurado para futura ativação. Nenhum comando de doação foi iniciado nesta versão."
       : "Discord preparado, mas desativado por DISCORD_ENABLED=false."
   };
 }
@@ -1043,6 +1123,47 @@ app.post("/discord/orders", auth, async (req, res, next) => {
   }
 });
 
+app.post("/payments/mercadopago/donation", auth, async (req, res, next) => {
+  try {
+    if (!requirePaymentsAdmin(req, res)) return;
+
+    const config = getPaymentConfig().mercadoPago;
+    if (!config.configured) return res.status(400).json({ error: "Mercado Pago não configurado no Render." });
+    if (!config.enabled) return res.status(400).json({ error: "Mercado Pago está em modo preparado. Altere MERCADOPAGO_ENABLED=true para criar link de doação." });
+
+    const order = createPreparedOrder({ ...(req.body || {}), provider: "mercadopago", currency: "BRL" }, req.user);
+    if (!order.amount) return res.status(400).json({ error: "Informe um valor de doação válido." });
+
+    order.status = "aguardando_doacao";
+    order.donationStatus = "aguardando_doacao";
+    order.paymentStatus = "preference_created";
+    order.note = "Link de doação Mercado Pago criado. Key ainda não será gerada automaticamente nesta etapa.";
+
+    const preference = await createMercadoPagoPreference(order, config);
+    order.mpPreferenceId = preference.id || null;
+    order.externalReference = order.id;
+    order.paymentUrl = preference.init_point || preference.sandbox_init_point || null;
+    order.sandboxPaymentUrl = preference.sandbox_init_point || null;
+    order.mpRawStatus = preference.status || null;
+    order.updatedAt = nowIso();
+
+    req.db.discordOrders = [order, ...(Array.isArray(req.db.discordOrders) ? req.db.discordOrders : [])].slice(0, 100);
+    await writeDb(req.db);
+
+    res.status(201).json({ ok: true, order, paymentUrl: order.paymentUrl });
+  } catch (error) {
+    appendSystemLog({
+      level: "warning",
+      origin: "api.payments.mercadopago.donation",
+      message: error.message || "Falha ao criar link de doação Mercado Pago.",
+      userId: req.user?.id || null,
+      username: req.user?.username || null,
+      context: { status: error.status || null, details: error.details || null }
+    }).catch(() => null);
+    next(error);
+  }
+});
+
 app.post("/webhooks/mercadopago", async (req, res) => {
   const config = getPaymentConfig().mercadoPago;
   if (!config.enabled || !config.configured) {
@@ -1054,7 +1175,46 @@ app.post("/webhooks/mercadopago", async (req, res) => {
     }).catch(() => null);
     return res.status(202).json({ ok: true, ignored: true, reason: "mercadopago_disabled_or_unconfigured" });
   }
-  return res.status(202).json({ ok: true, received: true, message: "Webhook Mercado Pago preparado para implementação de confirmação automática." });
+
+  try {
+    const paymentId = String(req.body?.data?.id || req.body?.id || req.query?.id || "").trim();
+    if (!paymentId) return res.status(202).json({ ok: true, received: true, message: "Webhook recebido sem payment id." });
+
+    const payment = await fetchMercadoPagoPayment(paymentId, config);
+    const externalReference = String(payment.external_reference || payment.metadata?.upsystem_order_id || "").trim();
+    const db = await readDb();
+    const order = findDonationOrder(db, externalReference);
+
+    if (order) {
+      order.paymentId = String(payment.id || paymentId);
+      order.paymentStatus = String(payment.status || "unknown");
+      order.mpStatusDetail = String(payment.status_detail || "");
+      order.updatedAt = nowIso();
+
+      if (payment.status === "approved") {
+        order.status = "doacao_confirmada";
+        order.donationStatus = "doacao_confirmada";
+        order.paidAt = payment.date_approved || nowIso();
+        order.note = "Doação confirmada pelo Mercado Pago. Key ainda não foi gerada automaticamente nesta etapa.";
+      } else {
+        order.status = "aguardando_doacao";
+        order.donationStatus = "aguardando_doacao";
+      }
+
+      db.discordOrders = [order, ...db.discordOrders.filter((item) => item.id !== order.id)].slice(0, 100);
+      await writeDb(db);
+    }
+
+    return res.status(202).json({ ok: true, received: true, paymentId, externalReference, matched: Boolean(order) });
+  } catch (error) {
+    await appendSystemLog({
+      level: "warning",
+      origin: "api.webhook.mercadopago",
+      message: error.message || "Falha ao processar webhook Mercado Pago.",
+      context: { body: req.body || null, status: error.status || null }
+    }).catch(() => null);
+    return res.status(202).json({ ok: false, received: true, error: error.message || "Falha ao processar webhook." });
+  }
 });
 
 app.post("/webhooks/paypal", async (req, res) => {
@@ -1087,7 +1247,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.0.7",
+    version: "1.0.8",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
