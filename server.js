@@ -3,6 +3,8 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
+const fs = require("fs");
+const path = require("path");
 const {
   readDb,
   writeDb,
@@ -318,7 +320,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.1.1");
+  res.setHeader("X-UpSystem-API", "1.1.2");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -354,10 +356,15 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.1.1", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.1.2", database: "postgresql" });
   } catch (error) {
     next(error);
   }
+});
+
+app.get("/extension/status", auth, async (req, res, next) => {
+  try { registerExtensionSeen(req.db, req); await writeDb(req.db); res.json({ ok: true, extension: getExtensionRuntimeStatus(req.db) }); }
+  catch (error) { next(error); }
 });
 
 app.post("/auth/login", async (req, res, next) => {
@@ -386,6 +393,8 @@ app.post("/auth/login", async (req, res, next) => {
     user.updatedAt = nowIso();
     writeDb(db);
 
+    registerExtensionSeen(db, req);
+    await writeDb(db);
     res.json({ token: sign(user), user: publicUser(user) });
   } catch (e) {
     next(e);
@@ -1001,57 +1010,18 @@ async function sendDiscordDm(userId, content) {
 
 
 function defaultDiscordTemplates() {
+  const version = process.env.MIN_EXTENSION_VERSION || "1.1.2";
   return [
-    {
-      id: "donation_panel",
-      name: "Painel de doação",
-      buttonLabel: "Selecione um plano",
-      title: "Apoie o UpSysteM",
-      description: "Status: Online • Versão: v1.1.1 • Contribua com o projeto e receba uma key de acesso como agradecimento.",
-      body: "Escolha um plano no menu abaixo, faça a doação via Pix QR Code e aguarde a confirmação automática. A key será enviada por DM; se a DM estiver bloqueada, ela será entregue no canal temporário de validação.",
-      plansText: "Planos disponíveis: Semanal e Mensal.",
-      footer: "Após a confirmação do pagamento, a key é gerada automaticamente e vinculada ao seu ID do Discord."
-    },
-    {
-      id: "verification_panel",
-      name: "Boas-vindas / Verificação",
-      buttonLabel: "Verificar",
-      title: "Bem-vindo ao UpSysteM",
-      description: "Faça sua verificação para liberar as áreas do servidor e o painel de doação.",
-      body: "Clique no botão Verificar abaixo. O bot concederá o cargo user/verificado automaticamente.",
-      plansText: "Depois da verificação, você poderá acessar o painel de doação e receber sua key após confirmação.",
-      footer: "A verificação é necessária para proteger o fluxo de doação e entrega de keys."
-    },
-    {
-      id: "payment_instructions",
-      name: "Instruções de pagamento",
-      buttonLabel: "Doar",
-      title: "Como funciona a doação",
-      description: "O pagamento padrão é Pix via QR Code.",
-      body: "Selecione o plano no menu. O bot criará uma sala temporária de validação com QR Code Pix, copia e cola e link alternativo.",
-      plansText: "Semanal ou Mensal.",
-      footer: "Guarde a key com segurança."
-    },
-    {
-      id: "extension_info",
-      name: "Informações da extensão",
-      buttonLabel: "Doar",
-      title: "UpSysteM Extension",
-      description: "Automação com controle de acesso por key.",
-      body: "A key libera o uso da extensão conforme o plano escolhido. O acesso é pessoal e vinculado às regras do sistema.",
-      plansText: "Semanal e Mensal.",
-      footer: "Suporte pelo servidor Discord."
-    },
-    {
-      id: "support_key",
-      name: "Suporte/key",
-      buttonLabel: "Doar",
-      title: "Suporte de key",
-      description: "Use este canal para orientações sobre ativação.",
-      body: "Depois de receber sua key, informe-a na extensão para ativar o acesso. Se houver falha, procure o suporte.",
-      plansText: "A key segue o plano escolhido na doação.",
-      footer: "Não compartilhe sua key com terceiros."
-    }
+    { id: "donation_panel", name: "Painel de doação", buttonLabel: "Selecione um plano", title: "Comprar acesso UpSysteM", description: "Escolha seu plano e libere sua key de acesso.", body: `Status: {status}
+Versão: v${version}
+
+O UpSysteM está preparado para liberar acesso por key após a confirmação do pagamento.`, plansText: `Planos disponíveis:
+• Semanal
+• Mensal`, footer: "Selecione um plano no menu abaixo. A sala temporária será criada automaticamente para o Pix." },
+    { id: "verification_panel", name: "Boas-vindas / Verificação", buttonLabel: "👍 VERIFICAR", title: "Verificação de conta!", description: "Olá! 👋", body: "Após a verificação, selecione o plano e tenha acesso!", plansText: "@everyone", footer: "Clique no botão VERIFICAR para receber o cargo user/verificado." },
+    { id: "payment_instructions", name: "Instruções de pagamento", buttonLabel: "Doar", title: "Como funciona a doação", description: "O pagamento padrão é Pix via QR Code.", body: "Selecione o plano no menu. O bot criará uma sala temporária de validação com QR Code Pix, copia e cola e link alternativo.", plansText: "Semanal ou Mensal.", footer: "Guarde a key com segurança." },
+    { id: "extension_info", name: "Informações da extensão", buttonLabel: "Doar", title: "UpSysteM Extension", description: "Automação com controle de acesso por key.", body: "A key libera o uso da extensão conforme o plano escolhido. O acesso é pessoal e vinculado às regras do sistema.", plansText: "Semanal e Mensal.", footer: "Suporte pelo servidor Discord." },
+    { id: "support_key", name: "Suporte/key", buttonLabel: "Doar", title: "Suporte de key", description: "Use este canal para orientações sobre ativação.", body: "Depois de receber sua key, informe-a na extensão para ativar o acesso. Se houver falha, procure o suporte.", plansText: "A key segue o plano escolhido na doação.", footer: "Não compartilhe sua key com terceiros." }
   ];
 }
 
@@ -1065,45 +1035,83 @@ function getDiscordTemplates(db) {
   return Array.from(map.values());
 }
 
-function templateToDiscordPayload(template) {
-  const title = String(template?.title || "Apoie o UpSysteM").slice(0, 120);
-  const description = String(template?.description || "Contribua e receba uma key de acesso como agradecimento.").slice(0, 4000);
-  const body = String(template?.body || "Clique em Doar para escolher o plano e gerar o Pix.").slice(0, 4000);
-  const plansText = String(template?.plansText || "Planos disponíveis: Semanal e Mensal.").slice(0, 1000);
-  const footer = String(template?.footer || "Key vinculada ao seu ID do Discord.").slice(0, 1000);
-  return {
-    embeds: [{
-      title,
-      description,
-      color: 0xd4af37,
-      fields: [
-        { name: "Informações", value: body || "-" },
-        { name: "Planos", value: plansText || "-" },
-        { name: "Importante", value: footer || "-" }
-      ],
-      footer: { text: "UpSysteM • Doação com key de acesso" }
-    }]
-  };
+const DISCORD_ASSETS_DIR = path.join(__dirname, "assets", "discord");
+const DISCORD_LOGO_FILE = "upsystem-logo.png";
+const DISCORD_BANNER_FILE = "upsystem-banner-verificacao.png";
+
+function discordAssetPath(fileName) {
+  const file = path.join(DISCORD_ASSETS_DIR, fileName);
+  return fs.existsSync(file) ? file : null;
+}
+
+function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.2"; }
+
+function getExtensionRuntimeStatus(db = null) {
+  const lastSeen = db?.meta?.extensionLastSeenAt ? Date.parse(db.meta.extensionLastSeenAt) : 0;
+  const hasRecentHeartbeat = lastSeen && Date.now() - lastSeen < 5 * 60 * 1000;
+  const online = true;
+  return { online, recentHeartbeat: Boolean(hasRecentHeartbeat), icon: online ? "🟢" : "🔴", label: online ? "Online" : "Offline", text: `${online ? "🟢" : "🔴"} Status: ${online ? "Online" : "Offline"}`, version: extensionVersionLabel() };
+}
+
+function registerExtensionSeen(db, req) {
+  try {
+    const clientVersion = String(req.get("X-UpSystem-Version") || "").trim();
+    const clientBuild = String(req.get("X-UpSystem-Build") || "").trim();
+    db.meta = db.meta && typeof db.meta === "object" ? db.meta : {};
+    db.meta.extensionLastSeenAt = nowIso();
+    if (clientVersion) db.meta.extensionLastVersion = clientVersion;
+    if (clientBuild) db.meta.extensionLastBuild = clientBuild;
+  } catch (_) {}
+}
+
+function templateToDiscordPayload(template, options = {}) {
+  const isVerification = template?.id === "verification_panel";
+  const isDonation = template?.id === "donation_panel";
+  const runtime = getExtensionRuntimeStatus(options.db || null);
+  const title = String(template?.title || (isVerification ? "Verificação de conta!" : "Comprar acesso UpSysteM")).slice(0, 120);
+  const description = String(template?.description || (isVerification ? "Olá! 👋" : "Escolha seu plano e libere sua key de acesso.")).slice(0, 4000);
+  const bodyRaw = String(template?.body || "").replaceAll("{status}", runtime.text).replaceAll("{version}", `v${runtime.version}`).slice(0, 4000);
+  const plansText = String(template?.plansText || (isVerification ? "@everyone" : "Planos disponíveis: Semanal e Mensal.")).slice(0, 1000);
+  const footer = String(template?.footer || "UpSysteM • Acesso por key").slice(0, 1000);
+  if (isVerification) return { content: "@everyone", embeds: [{ author: { name: "UpSysteM", icon_url: `attachment://${DISCORD_LOGO_FILE}` }, title, description: bodyRaw || "Após a verificação, selecione o plano e tenha acesso!", color: 0x7c3aed, thumbnail: { url: `attachment://${DISCORD_LOGO_FILE}` }, image: { url: `attachment://${DISCORD_BANNER_FILE}` }, footer: { text: footer || "UpSysteM • Verificação de conta" } }], assetFiles: [DISCORD_LOGO_FILE, DISCORD_BANNER_FILE] };
+  if (isDonation) return { embeds: [{ author: { name: "UpSysteM", icon_url: `attachment://${DISCORD_LOGO_FILE}` }, title, description, color: 0x7c3aed, thumbnail: { url: `attachment://${DISCORD_LOGO_FILE}` }, fields: [{ name: "Informações da extensão", value: bodyRaw || `${runtime.text}\nVersão: v${runtime.version}`, inline: false }, { name: "Planos", value: plansText || `• Semanal\n• Mensal`, inline: false }, { name: "Importante", value: footer || "Selecione um plano no menu abaixo.", inline: false }], footer: { text: "UpSysteM • Compra com key de acesso" } }], assetFiles: [DISCORD_LOGO_FILE] };
+  return { embeds: [{ title, description, color: 0x7c3aed, fields: [{ name: "Informações", value: bodyRaw || "-" }, { name: "Planos", value: plansText || "-" }, { name: "Importante", value: footer || "-" }], footer: { text: "UpSysteM • Discord" } }] };
 }
 
 async function sendDiscordChannelPayload(channelId, payload = {}) {
   const config = getDiscordConfig();
   if (!config.tokenPresent || !channelId) return { ok: false, skipped: true };
-  const response = await fetch(`https://discord.com/api/v10/channels/${encodeURIComponent(channelId)}/messages`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bot ${config.token}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(payload)
-  });
-  const data = await response.json().catch(() => ({}));
+  const endpoint = `https://discord.com/api/v10/channels/${encodeURIComponent(channelId)}/messages`;
+  const assetFiles = Array.isArray(payload.assetFiles) ? payload.assetFiles : [];
+  const cleanPayload = { ...payload };
+  delete cleanPayload.assetFiles;
+  const resolvedFiles = assetFiles.map((name) => ({ name, path: discordAssetPath(name) })).filter((file) => file.path);
+  let response;
+  if (resolvedFiles.length) {
+    const form = new FormData();
+    form.append("payload_json", JSON.stringify(cleanPayload));
+    resolvedFiles.forEach((file, index) => {
+      const bytes = fs.readFileSync(file.path);
+      form.append(`files[${index}]`, new Blob([bytes], { type: "image/png" }), file.name);
+    });
+    response = await fetch(endpoint, { method: "POST", headers: { Authorization: `Bot ${config.token}` }, body: form });
+  } else {
+    response = await fetch(endpoint, { method: "POST", headers: { Authorization: `Bot ${config.token}`, "Content-Type": "application/json" }, body: JSON.stringify(cleanPayload) });
+  }
+  const body = await response.json().catch(async () => ({ raw: await response.text().catch(() => "") }));
   if (!response.ok) {
-    const error = new Error(`Falha ao enviar payload Discord (${response.status}). ${JSON.stringify(data).slice(0, 300)}`);
+    const error = new Error(`Falha ao enviar payload Discord (${response.status}). ${JSON.stringify(body).slice(0, 300)}`);
     error.status = response.status;
     throw error;
   }
-  return { ok: true, message: data };
+  return { ok: true, message: body };
+}
+
+async function logDiscordEvent(message, embeds = []) {
+  const config = getDiscordConfig();
+  if (!config.logChannelId) return { ok: false, skipped: true, reason: "missing_log_channel" };
+  try { return await sendDiscordChannelMessage(config.logChannelId, message, embeds); }
+  catch (error) { await appendSystemLog({ level: "warning", origin: "api.discord.log", message: error.message || "Falha ao enviar log Discord.", context: { logChannelId: config.logChannelId, status: error.status || null } }).catch(() => null); return { ok: false, error: error.message }; }
 }
 
 function discordSafeName(value) {
@@ -1699,7 +1707,7 @@ app.post("/discord/templates/send-panel", auth, async (req, res, next) => {
     const channelId = String(req.body?.channelId || config.panelChannelId || config.salesChannelId || "").trim();
     if (!channelId) return res.status(400).json({ error: "Canal de doações não configurado." });
     const template = getDiscordTemplates(req.db).find((tpl) => tpl.id === templateId) || getDiscordTemplates(req.db)[0];
-    const payload = templateToDiscordPayload(template);
+    const payload = templateToDiscordPayload(template, { db: req.db });
     payload.components = [{
       type: 1,
       components: [{
@@ -1715,7 +1723,7 @@ app.post("/discord/templates/send-panel", auth, async (req, res, next) => {
       }]
     }];
     const sent = await sendDiscordChannelPayload(channelId, payload);
-    await sendDiscordChannelMessage(config.logChannelId, `📌 Painel de doação enviado no canal <#${channelId}> pelo Console.`).catch(() => null);
+    await logDiscordEvent(`📌 Painel de compra/doação enviado no canal <#${channelId}> pelo Console.`);
     res.json({ ok: true, message: "Painel enviado no canal configurado.", discordMessageId: sent.message?.id || null });
   } catch (error) { next(error); }
 });
@@ -1728,13 +1736,13 @@ app.post("/discord/templates/send-verify-panel", auth, async (req, res, next) =>
     const channelId = String(req.body?.channelId || config.verifyChannelId || "").trim();
     if (!channelId) return res.status(400).json({ error: "Canal de verificação não configurado." });
     const template = getDiscordTemplates(req.db).find((tpl) => tpl.id === "verification_panel") || getDiscordTemplates(req.db)[0];
-    const payload = templateToDiscordPayload(template);
+    const payload = templateToDiscordPayload(template, { db: req.db });
     payload.components = [{
       type: 1,
-      components: [{ type: 2, style: 3, custom_id: "upsystem_verify_user", label: template.buttonLabel || "VERIFICAR" }]
+      components: [{ type: 2, style: 3, custom_id: "upsystem_verify_user", label: template.buttonLabel || "👍 VERIFICAR" }]
     }];
     const sent = await sendDiscordChannelPayload(channelId, payload);
-    await sendDiscordChannelMessage(config.logChannelId, `📌 Painel de verificação enviado no canal <#${channelId}> pelo Console.`).catch(() => null);
+    await logDiscordEvent(`📌 Painel de verificação enviado no canal <#${channelId}> pelo Console.`);
     res.json({ ok: true, message: "Painel de verificação enviado no canal configurado.", discordMessageId: sent.message?.id || null });
   } catch (error) { next(error); }
 });
@@ -2005,7 +2013,7 @@ async function startDiscordBot() {
         order.paymentUrl = transactionData.ticket_url || null;
       } else {
         order.paymentStatus = "test_pending";
-        order.pixQrCode = "PIX_TESTE_UPSYSTEM_V1_1_1_CONFIGURE_MERCADOPAGO_ACCESS_TOKEN";
+        order.pixQrCode = "PIX_TESTE_UPSYSTEM_V1_1_2_CONFIGURE_MERCADOPAGO_ACCESS_TOKEN";
         order.pixTicketUrl = null;
         order.paymentUrl = null;
         order.note = "Fluxo Discord testado sem Mercado Pago ativo. Configure Mercado Pago para Pix real e confirmação automática.";
@@ -2046,9 +2054,12 @@ async function startDiscordBot() {
         if (!config.userRoleId) return interaction.reply({ content: "Cargo de verificação não configurado. Avise um administrador.", ephemeral: true });
         const member = interaction.member || await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
         if (!member) return interaction.reply({ content: "Não foi possível localizar seu membro no servidor.", ephemeral: true });
-        if (memberHasDonationAccess(member, config)) return interaction.reply({ content: "Você já está verificado.", ephemeral: true });
+        if (memberHasDonationAccess(member, config)) {
+          await logDiscordEvent(`ℹ️ Usuário já verificado tentou verificar novamente: <@${interaction.user.id}>.`);
+          return interaction.reply({ content: "Você já está verificado.", ephemeral: true });
+        }
         await member.roles.add(config.userRoleId, "UpSysteM verificação por botão");
-        await sendDiscordChannelMessage(config.logChannelId, `✅ Usuário verificado: <@${interaction.user.id}> recebeu o cargo user.`).catch(() => null);
+        await logDiscordEvent(`✅ Usuário verificado: <@${interaction.user.id}> recebeu o cargo user.`);
         return interaction.reply({ content: "Verificação concluída. Você já pode usar o painel de doação.", ephemeral: true });
       }
 
@@ -2056,12 +2067,14 @@ async function startDiscordBot() {
         await interaction.deferReply({ ephemeral: true });
         const plan = normalizeDonationPlan(interaction.values?.[0] || "monthly");
         const config = getDiscordConfig(await readDb().catch(() => null));
+        await logDiscordEvent(`🛒 Seleção de plano recebida. Usuário: <@${interaction.user.id}> · Plano: ${donationPlanLabel(plan)} · Canal: <#${interaction.channelId}>`);
         if (config.userRoleId) {
-          const member = interaction.member || await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
+          const member = await interaction.guild?.members.fetch(interaction.user.id).catch(() => null) || interaction.member;
           const verified = memberHasDonationAccess(member, config);
           if (!verified) {
             const where = config.verifyChannelId ? ` Acesse <#${config.verifyChannelId}> e clique em Verificar.` : " Faça a verificação no canal indicado pelo servidor.";
-            return interaction.editReply({ content: `Você precisa se verificar antes de doar.${where}`, components: [] });
+            await logDiscordEvent(`⛔ Compra bloqueada por falta de verificação. Usuário: <@${interaction.user.id}> · Plano: ${donationPlanLabel(plan)} · Canal: <#${interaction.channelId}>`);
+            return interaction.editReply({ content: `Você precisa se verificar antes de comprar.${where}`, components: [] });
           }
         }
         const guild = interaction.guild;
@@ -2087,7 +2100,7 @@ async function startDiscordBot() {
         await writeDb(db);
         await sendPixToValidationChannel(validationChannel, order);
         await interaction.editReply({ content: `Sala de validação criada: <#${validationChannel.id}>. Conclua a doação por Pix nesse canal.` });
-        await sendDiscordChannelMessage(config.logChannelId, `🟡 Nova doação criada pelo painel. Usuário: <@${interaction.user.id}> · Plano: ${donationPlanLabel(plan)} · Canal: <#${validationChannel.id}> · Status: aguardando_doacao`).catch(() => null);
+        await logDiscordEvent(`🟡 Nova compra/doação criada pelo painel. Usuário: <@${interaction.user.id}> · Plano: ${donationPlanLabel(plan)} · Canal: <#${validationChannel.id}> · Status: aguardando_doacao`);
         return;
       }
 
@@ -2102,7 +2115,8 @@ async function startDiscordBot() {
         message: error.message || "Falha em interação Discord.",
         context: { status: error.status || null, customId: interaction.customId || null, command: interaction.commandName || null }
       }).catch(() => null);
-      const content = "Não foi possível iniciar a doação agora. O administrador foi avisado para verificar a integração.";
+      await logDiscordEvent(`❌ Falha na interação Discord. Usuário: <@${interaction.user?.id || "desconhecido"}> · customId: ${interaction.customId || "-"} · Erro: ${error.message || "sem detalhe"}`);
+      const content = "Não foi possível iniciar a compra agora. O administrador foi avisado para verificar a integração.";
       if (interaction.deferred || interaction.replied) await interaction.editReply({ content, components: [] }).catch(() => null);
       else await interaction.reply({ content, ephemeral: true }).catch(() => null);
     }
@@ -2144,7 +2158,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.1.1",
+    version: "1.1.2",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
