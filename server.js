@@ -318,7 +318,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.1.0");
+  res.setHeader("X-UpSystem-API", "1.1.1");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -354,7 +354,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.1.0", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.1.1", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -1005,10 +1005,10 @@ function defaultDiscordTemplates() {
     {
       id: "donation_panel",
       name: "Painel de doação",
-      buttonLabel: "Doar",
+      buttonLabel: "Selecione um plano",
       title: "Apoie o UpSysteM",
-      description: "Contribua com o projeto e receba uma key de acesso como agradecimento.",
-      body: "Escolha um plano, faça a doação via Pix QR Code e aguarde a confirmação automática. A key será enviada por DM; se a DM estiver bloqueada, ela será entregue no canal temporário de validação.",
+      description: "Status: Online • Versão: v1.1.1 • Contribua com o projeto e receba uma key de acesso como agradecimento.",
+      body: "Escolha um plano no menu abaixo, faça a doação via Pix QR Code e aguarde a confirmação automática. A key será enviada por DM; se a DM estiver bloqueada, ela será entregue no canal temporário de validação.",
       plansText: "Planos disponíveis: Semanal e Mensal.",
       footer: "Após a confirmação do pagamento, a key é gerada automaticamente e vinculada ao seu ID do Discord."
     },
@@ -1017,7 +1017,7 @@ function defaultDiscordTemplates() {
       name: "Boas-vindas / Verificação",
       buttonLabel: "Verificar",
       title: "Bem-vindo ao UpSysteM",
-      description: "Faça sua verificação para liberar as áreas do servidor e o botão Doar.",
+      description: "Faça sua verificação para liberar as áreas do servidor e o painel de doação.",
       body: "Clique no botão Verificar abaixo. O bot concederá o cargo user/verificado automaticamente.",
       plansText: "Depois da verificação, você poderá acessar o painel de doação e receber sua key após confirmação.",
       footer: "A verificação é necessária para proteger o fluxo de doação e entrega de keys."
@@ -1028,7 +1028,7 @@ function defaultDiscordTemplates() {
       buttonLabel: "Doar",
       title: "Como funciona a doação",
       description: "O pagamento padrão é Pix via QR Code.",
-      body: "Ao clicar em Doar, selecione o plano. O bot criará uma sala temporária de validação com QR Code Pix, copia e cola e link alternativo.",
+      body: "Selecione o plano no menu. O bot criará uma sala temporária de validação com QR Code Pix, copia e cola e link alternativo.",
       plansText: "Semanal ou Mensal.",
       footer: "Guarde a key com segurança."
     },
@@ -1553,32 +1553,55 @@ function getPublicDiscordStatus(config = getDiscordConfig()) {
   };
 }
 
+function discordConfigPayload(req) {
+  const body = req.body || {};
+  const allowed = ["clientId", "guildId", "salesChannelId", "panelChannelId", "logChannelId", "validationCategoryId", "staffRoleId", "verifyChannelId", "userRoleId", "roleAdmiroId", "roleParceiroId", "roleClientesId", "roleDevId"];
+  const invalid = Object.entries(body).filter(([key, value]) => value && allowed.includes(key) && !numericConfig(value));
+  if (invalid.length) {
+    const err = new Error(`IDs inválidos: ${invalid.map(([key]) => key).join(", ")}.`);
+    err.status = 400;
+    throw err;
+  }
+  const values = {};
+  for (const key of allowed) values[key] = numericConfig(body[key]);
+  if (!values.panelChannelId) values.panelChannelId = values.salesChannelId;
+  return values;
+}
+
+async function saveDiscordConfigFromRequest(req) {
+  const values = discordConfigPayload(req);
+  const configEntry = { id: "__discord_config", name: "Configuração Discord", values, updatedAt: nowIso(), updatedBy: req.user?.username || "adm" };
+  req.db.discordTemplates = [configEntry, ...(Array.isArray(req.db.discordTemplates) ? req.db.discordTemplates.filter((item) => item.id !== "__discord_config") : [])];
+  await writeDb(req.db);
+  const config = getDiscordConfig(req.db);
+  return { values, config };
+}
+
 app.get("/discord/status", auth, (req, res) => {
   if (!requireDiscordAdmin(req, res)) return;
   const config = getDiscordConfig(req.db);
   res.json({ ok: true, discord: getPublicDiscordStatus(config) });
 });
 
+app.get("/discord/config", auth, (req, res) => {
+  if (!requireDiscordAdmin(req, res)) return;
+  const config = getDiscordConfig(req.db);
+  res.json({ ok: true, discord: getPublicDiscordStatus(config), config: getSavedDiscordConfig(req.db) });
+});
+
+app.post("/discord/config", auth, async (req, res, next) => {
+  try {
+    if (!requireDiscordAdmin(req, res)) return;
+    const { values, config } = await saveDiscordConfigFromRequest(req);
+    res.json({ ok: true, message: "Configuração Discord salva com sucesso.", discord: getPublicDiscordStatus(config), config: values });
+  } catch (error) { next(error); }
+});
+
 app.put("/discord/config", auth, async (req, res, next) => {
   try {
     if (!requireDiscordAdmin(req, res)) return;
-    const body = req.body || {};
-    const values = {
-      clientId: numericConfig(body.clientId),
-      guildId: numericConfig(body.guildId),
-      salesChannelId: numericConfig(body.salesChannelId),
-      panelChannelId: numericConfig(body.panelChannelId) || numericConfig(body.salesChannelId),
-      logChannelId: numericConfig(body.logChannelId),
-      verifyChannelId: numericConfig(body.verifyChannelId),
-      userRoleId: numericConfig(body.userRoleId)
-    };
-    const invalid = Object.entries(body).filter(([key, value]) => value && ["clientId", "guildId", "salesChannelId", "panelChannelId", "logChannelId", "verifyChannelId", "userRoleId"].includes(key) && !numericConfig(value));
-    if (invalid.length) return res.status(400).json({ error: `IDs inválidos: ${invalid.map(([key]) => key).join(", ")}.` });
-    const configEntry = { id: "__discord_config", name: "Configuração Discord", values, updatedAt: nowIso(), updatedBy: req.user.username };
-    req.db.discordTemplates = [configEntry, ...(Array.isArray(req.db.discordTemplates) ? req.db.discordTemplates.filter((item) => item.id !== "__discord_config") : [])];
-    await writeDb(req.db);
-    const config = getDiscordConfig(req.db);
-    res.json({ ok: true, discord: getPublicDiscordStatus(config), config: values });
+    const { values, config } = await saveDiscordConfigFromRequest(req);
+    res.json({ ok: true, message: "Configuração Discord salva com sucesso.", discord: getPublicDiscordStatus(config), config: values });
   } catch (error) { next(error); }
 });
 
@@ -1588,7 +1611,7 @@ app.post("/discord/config/restore", auth, async (req, res, next) => {
     req.db.discordTemplates = (Array.isArray(req.db.discordTemplates) ? req.db.discordTemplates : []).filter((item) => item.id !== "__discord_config");
     await writeDb(req.db);
     const config = getDiscordConfig(req.db);
-    res.json({ ok: true, discord: getPublicDiscordStatus(config), message: "Configuração restaurada do Render." });
+    res.json({ ok: true, discord: getPublicDiscordStatus(config), message: "Configuração restaurada do Render. Você pode salvar esses valores no banco se quiser." });
   } catch (error) { next(error); }
 });
 
@@ -1657,7 +1680,7 @@ app.put("/discord/templates/:id", auth, async (req, res, next) => {
       body: String(body.body || base.body || "").slice(0, 4000),
       plansText: String(body.plansText || base.plansText || "").slice(0, 1000),
       footer: String(body.footer || base.footer || "").slice(0, 1000),
-      buttonLabel: String(body.buttonLabel || base.buttonLabel || "Doar").slice(0, 40),
+      buttonLabel: String(body.buttonLabel || base.buttonLabel || (id === "verification_panel" ? "VERIFICAR" : "Selecione um plano")).slice(0, 40),
       updatedAt: nowIso(),
       updatedBy: req.user?.username || "adm"
     };
@@ -1674,12 +1697,22 @@ app.post("/discord/templates/send-panel", auth, async (req, res, next) => {
     if (!config.tokenPresent) return res.status(400).json({ error: "Token do bot não configurado." });
     const templateId = String(req.body?.templateId || "donation_panel");
     const channelId = String(req.body?.channelId || config.panelChannelId || config.salesChannelId || "").trim();
-    if (!channelId) return res.status(400).json({ error: "Canal do painel Discord não configurado." });
+    if (!channelId) return res.status(400).json({ error: "Canal de doações não configurado." });
     const template = getDiscordTemplates(req.db).find((tpl) => tpl.id === templateId) || getDiscordTemplates(req.db)[0];
     const payload = templateToDiscordPayload(template);
     payload.components = [{
       type: 1,
-      components: [{ type: 2, style: 3, custom_id: "upsystem_donate_start", label: template.buttonLabel || "Doar" }]
+      components: [{
+        type: 3,
+        custom_id: "upsystem_donation_plan",
+        placeholder: template.buttonLabel || "Selecione um plano",
+        min_values: 1,
+        max_values: 1,
+        options: [
+          { label: "Semanal", value: "weekly", description: "Key de acesso semanal" },
+          { label: "Mensal", value: "monthly", description: "Key de acesso mensal" }
+        ]
+      }]
     }];
     const sent = await sendDiscordChannelPayload(channelId, payload);
     await sendDiscordChannelMessage(config.logChannelId, `📌 Painel de doação enviado no canal <#${channelId}> pelo Console.`).catch(() => null);
@@ -1693,12 +1726,12 @@ app.post("/discord/templates/send-verify-panel", auth, async (req, res, next) =>
     const config = getDiscordConfig(req.db);
     if (!config.tokenPresent) return res.status(400).json({ error: "Token do bot não configurado." });
     const channelId = String(req.body?.channelId || config.verifyChannelId || "").trim();
-    if (!channelId) return res.status(400).json({ error: "Canal de verificação do Discord não configurado." });
+    if (!channelId) return res.status(400).json({ error: "Canal de verificação não configurado." });
     const template = getDiscordTemplates(req.db).find((tpl) => tpl.id === "verification_panel") || getDiscordTemplates(req.db)[0];
     const payload = templateToDiscordPayload(template);
     payload.components = [{
       type: 1,
-      components: [{ type: 2, style: 1, custom_id: "upsystem_verify_user", label: template.buttonLabel || "Verificar" }]
+      components: [{ type: 2, style: 3, custom_id: "upsystem_verify_user", label: template.buttonLabel || "VERIFICAR" }]
     }];
     const sent = await sendDiscordChannelPayload(channelId, payload);
     await sendDiscordChannelMessage(config.logChannelId, `📌 Painel de verificação enviado no canal <#${channelId}> pelo Console.`).catch(() => null);
@@ -1939,9 +1972,6 @@ async function startDiscordBot() {
     const mpConfig = getPaymentConfig().mercadoPago;
 
     async function createDonationForInteraction(plan, sourceInteraction) {
-      if (!mpConfig.enabled || !mpConfig.configured) {
-        throw new Error("As doações Mercado Pago ainda não estão ativas.");
-      }
       const amount = defaultDonationAmount(plan);
       const email = `discord-${sourceInteraction.user.id}@upsystem.local`;
       const db = await readDb();
@@ -1964,14 +1994,22 @@ async function startDiscordBot() {
       order.externalReference = order.id;
       order.note = "Doação criada pelo painel Discord. Key será entregue após confirmação automática.";
 
-      const payment = await createMercadoPagoPixPayment(order, mpConfig);
-      const transactionData = payment?.point_of_interaction?.transaction_data || {};
-      order.paymentId = String(payment.id || "");
-      order.paymentStatus = String(payment.status || "pending");
-      order.pixQrCode = transactionData.qr_code || null;
-      order.pixQrCodeBase64 = transactionData.qr_code_base64 || null;
-      order.pixTicketUrl = transactionData.ticket_url || null;
-      order.paymentUrl = transactionData.ticket_url || null;
+      if (mpConfig.enabled && mpConfig.configured) {
+        const payment = await createMercadoPagoPixPayment(order, mpConfig);
+        const transactionData = payment?.point_of_interaction?.transaction_data || {};
+        order.paymentId = String(payment.id || "");
+        order.paymentStatus = String(payment.status || "pending");
+        order.pixQrCode = transactionData.qr_code || null;
+        order.pixQrCodeBase64 = transactionData.qr_code_base64 || null;
+        order.pixTicketUrl = transactionData.ticket_url || null;
+        order.paymentUrl = transactionData.ticket_url || null;
+      } else {
+        order.paymentStatus = "test_pending";
+        order.pixQrCode = "PIX_TESTE_UPSYSTEM_V1_1_1_CONFIGURE_MERCADOPAGO_ACCESS_TOKEN";
+        order.pixTicketUrl = null;
+        order.paymentUrl = null;
+        order.note = "Fluxo Discord testado sem Mercado Pago ativo. Configure Mercado Pago para Pix real e confirmação automática.";
+      }
       order.updatedAt = nowIso();
       return { db, order };
     }
@@ -2011,35 +2049,21 @@ async function startDiscordBot() {
         if (memberHasDonationAccess(member, config)) return interaction.reply({ content: "Você já está verificado.", ephemeral: true });
         await member.roles.add(config.userRoleId, "UpSysteM verificação por botão");
         await sendDiscordChannelMessage(config.logChannelId, `✅ Usuário verificado: <@${interaction.user.id}> recebeu o cargo user.`).catch(() => null);
-        return interaction.reply({ content: "Verificação concluída. Você já pode usar o botão Doar.", ephemeral: true });
-      }
-
-      if (interaction.isButton() && interaction.customId === "upsystem_donate_start") {
-        const config = getDiscordConfig(await readDb().catch(() => null));
-        if (config.userRoleId) {
-          const member = interaction.member || await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
-          const verified = memberHasDonationAccess(member, config);
-          if (!verified) {
-            const where = config.verifyChannelId ? ` Acesse <#${config.verifyChannelId}> e clique em Verificar.` : " Faça a verificação no canal indicado pelo servidor.";
-            return interaction.reply({ content: `Você precisa se verificar antes de doar.${where}`, ephemeral: true });
-          }
-        }
-        const row = new ActionRowBuilder().addComponents(
-          new StringSelectMenuBuilder()
-            .setCustomId("upsystem_donation_plan")
-            .setPlaceholder("Escolha o plano")
-            .addOptions([
-              { label: "Semanal", value: "weekly", description: "Key de acesso semanal" },
-              { label: "Mensal", value: "monthly", description: "Key de acesso mensal" }
-            ])
-        );
-        return interaction.reply({ content: "Selecione o plano para gerar o Pix de doação.", components: [row], ephemeral: true });
+        return interaction.reply({ content: "Verificação concluída. Você já pode usar o painel de doação.", ephemeral: true });
       }
 
       if (interaction.isStringSelectMenu() && interaction.customId === "upsystem_donation_plan") {
         await interaction.deferReply({ ephemeral: true });
         const plan = normalizeDonationPlan(interaction.values?.[0] || "monthly");
         const config = getDiscordConfig(await readDb().catch(() => null));
+        if (config.userRoleId) {
+          const member = interaction.member || await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
+          const verified = memberHasDonationAccess(member, config);
+          if (!verified) {
+            const where = config.verifyChannelId ? ` Acesse <#${config.verifyChannelId}> e clique em Verificar.` : " Faça a verificação no canal indicado pelo servidor.";
+            return interaction.editReply({ content: `Você precisa se verificar antes de doar.${where}`, components: [] });
+          }
+        }
         const guild = interaction.guild;
         if (!guild) throw new Error("Servidor Discord não disponível para criar canal de validação.");
         const channelName = `validacao-${discordSafeName(interaction.user.username)}-${Date.now().toString().slice(-5)}`;
@@ -2068,7 +2092,7 @@ async function startDiscordBot() {
       }
 
       if (interaction.isChatInputCommand() && interaction.commandName === "doar") {
-        await interaction.reply({ content: "Use o painel fixo no canal de doações e clique em **Doar** para abrir a validação por Pix QR Code.", ephemeral: true });
+        await interaction.reply({ content: "Use o painel fixo no canal de doações e selecione **Semanal** ou **Mensal** para abrir a validação por Pix QR Code.", ephemeral: true });
         return;
       }
     } catch (error) {
@@ -2120,7 +2144,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.1.0",
+    version: "1.1.1",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
