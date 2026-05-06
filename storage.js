@@ -35,21 +35,57 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+const PERMISSIONS = {
+  console_access: "Acesso ao Console",
+  user_create: "Criar usuários",
+  user_edit: "Editar usuários",
+  user_reset_password: "Resetar senhas",
+  user_delete: "Excluir usuários",
+  key_create: "Criar keys",
+  key_edit: "Editar keys",
+  key_delete: "Excluir keys",
+  key_lifetime: "Criar key vitalícia",
+  manage_sites: "Configurar sites",
+  online_connection: "Conexão Online",
+  control_repost: "Controlar Repost",
+  backup_export: "Exportar backup",
+  backup_import: "Importar backup",
+  system_logs: "Log do Sistema",
+  dev_tools: "Área Dev"
+};
+
+const ROLE_PERMISSIONS = {
+  adm: Object.keys(PERMISSIONS),
+  parceiro: ["console_access", "user_create", "user_edit", "user_reset_password", "key_create", "control_repost"],
+  usuario: ["control_repost"],
+  dev: ["console_access", "system_logs", "dev_tools", "control_repost"]
+};
+
+function normalizeRole(role) {
+  return ["adm", "parceiro", "usuario", "dev"].includes(role) ? role : "usuario";
+}
+
 function defaultPermissions(role) {
-  if (role === "adm") return [
-    "user_create",
-    "user_edit",
-    "user_delete",
-    "user_reset_password",
-    "manage_sites",
-    "online_connection",
-    "dev_tools",
-    "control_repost",
-    "console_access"
-  ];
-  if (role === "parceiro") return ["user_create", "user_edit", "user_reset_password", "control_repost", "console_access"];
-  if (role === "dev") return ["manage_sites", "online_connection", "control_repost", "dev_tools", "console_access"];
-  return ["control_repost"];
+  return [...(ROLE_PERMISSIONS[normalizeRole(role)] || ROLE_PERMISSIONS.usuario)];
+}
+
+function normalizePermissions(userOrRole, permissions = null) {
+  const role = typeof userOrRole === "string" ? normalizeRole(userOrRole) : normalizeRole(userOrRole?.role);
+  const received = Array.isArray(permissions) ? permissions : Array.isArray(userOrRole?.permissions) ? userOrRole.permissions : [];
+  if (role === "adm") return defaultPermissions("adm");
+  const allowed = new Set(defaultPermissions(role));
+  return Array.from(new Set([...defaultPermissions(role), ...received.filter((item) => allowed.has(item))]));
+}
+
+function normalizeUserRole(user) {
+  if (!user) return user;
+  const role = normalizeRole(user.role);
+  return {
+    ...user,
+    role,
+    permissions: normalizePermissions({ role, permissions: user.permissions }),
+    accountLimit: role === "parceiro" ? normalizeLimit(user.accountLimit ?? 3) : null
+  };
 }
 
 function defaultSites() {
@@ -64,6 +100,13 @@ function defaultSites() {
       baseUrl: "https://www.vivastreet.co.uk",
       mode: "exact-text",
       buttonText: "repost",
+      buttonSelectors: [
+        "button",
+        "a",
+        "input[type='button']",
+        "input[type='submit']",
+        "[role='button']"
+      ],
       clickAll: true,
       intervalMinutes: 15,
       retryUsedMinutes: 1,
@@ -84,6 +127,13 @@ function defaultSites() {
       baseUrl: "https://kommons.com",
       mode: "exact-text",
       buttonText: "manual boost",
+      buttonSelector: "button.boostButton",
+      buttonSelectors: [
+        "button.boostButton",
+        "button.btn-advertise.boostButton",
+        ".btn-advertise.boostButton",
+        "button[data-escort][data-premium]"
+      ],
       clickAll: false,
       intervalMinutes: 60,
       retryUsedMinutes: 10,
@@ -282,7 +332,7 @@ async function readDb() {
   ]);
 
   return {
-    users: users.rows.map(rowData),
+    users: users.rows.map(rowData).map(normalizeUserRole),
     activationKeys: keys.rows.map(rowData),
     sites: sites.rows.map(rowData),
     logs: logs.rows.map(rowData).reverse(),
@@ -298,7 +348,8 @@ async function writeDb(state) {
   try {
     await client.query("BEGIN");
 
-    for (const user of state.users || []) {
+    for (const rawUser of state.users || []) {
+      const user = normalizeUserRole(rawUser);
       if (!user?.id || !user?.username) continue;
       user.updatedAt = user.updatedAt || nowIso();
       await client.query(
@@ -412,11 +463,40 @@ function calcExpiresAt(accessType) {
 
 function hasPermission(user, permission) {
   if (!user) return false;
-  if (user.role === "adm") return true;
-  if (permission === "console_access") {
-    return ["parceiro", "dev"].includes(user.role) || Boolean(user.permissions?.includes("console_access"));
+  if (normalizeRole(user.role) === "adm") return true;
+  return normalizePermissions(user).includes(permission);
+}
+function canAccessConsole(user) {
+  return hasPermission(user, "console_access");
+}
+
+function canDeleteUser(currentUser, targetUser) {
+  if (!currentUser || !targetUser) return false;
+  if (normalizeRole(currentUser.role) !== "adm") return false;
+  if (targetUser.role === "adm" || targetUser.username === "admin" || targetUser.id === "admin-root") return false;
+  if (targetUser.id === currentUser.id || targetUser.username === currentUser.username) return false;
+  return true;
+}
+
+function canCreateKey(currentUser, accessType = "weekly") {
+  if (!currentUser) return false;
+  const role = normalizeRole(currentUser.role);
+  if (role === "adm") return true;
+  if (role !== "parceiro") return false;
+  return ["weekly", "monthly"].includes(accessType) && hasPermission(currentUser, "key_create");
+}
+
+function canDeleteKey(currentUser) {
+  return normalizeRole(currentUser?.role) === "adm";
+}
+
+function canManageUser(currentUser, targetUser) {
+  if (!currentUser || !targetUser) return false;
+  if (normalizeRole(currentUser.role) === "adm") return true;
+  if (normalizeRole(currentUser.role) === "parceiro") {
+    return targetUser.role === "usuario" && (targetUser.createdBy === currentUser.username || targetUser.createdByUser === currentUser.username);
   }
-  return Boolean(user.permissions?.includes(permission));
+  return false;
 }
 
 function makeId(prefix) {
@@ -510,6 +590,16 @@ async function deleteActivationKey(idOrCode) {
   );
 }
 
+async function deleteUserById(idOrUsername) {
+  await ensureSchema();
+  const db = getPool();
+  await db.query(
+    `DELETE FROM upsystem_users
+     WHERE id = $1 OR username = $1 OR data->>'id' = $1 OR data->>'username' = $1`,
+    [idOrUsername]
+  );
+}
+
 async function clearSystemLogs() {
   await ensureSchema();
   const db = getPool();
@@ -527,8 +617,18 @@ module.exports = {
   readDb,
   writeDb,
   publicUser,
+  PERMISSIONS,
+  ROLE_PERMISSIONS,
+  normalizeRole,
   defaultPermissions,
+  normalizePermissions,
+  normalizeUserRole,
   hasPermission,
+  canAccessConsole,
+  canDeleteUser,
+  canCreateKey,
+  canDeleteKey,
+  canManageUser,
   isExpired,
   calcExpiresAt,
   makeId,
@@ -539,6 +639,7 @@ module.exports = {
   assertPartnerLimit,
   appendSystemLog,
   deleteActivationKey,
+  deleteUserById,
   clearSystemLogs,
   healthDb
 };

@@ -7,8 +7,13 @@ const {
   readDb,
   writeDb,
   publicUser,
+  normalizeRole,
   defaultPermissions,
+  normalizePermissions,
   hasPermission,
+  canDeleteUser,
+  canCreateKey,
+  canDeleteKey,
   isExpired,
   calcExpiresAt,
   makeId,
@@ -19,6 +24,7 @@ const {
   assertPartnerLimit,
   appendSystemLog,
   deleteActivationKey,
+  deleteUserById,
   clearSystemLogs,
   healthDb
 } = require("./storage");
@@ -139,15 +145,6 @@ function visibleKeys(db, current) {
   return db.activationKeys.filter((key) => key.createdBy === current.username);
 }
 
-function normalizeRole(role) {
-  return ["usuario", "parceiro", "dev"].includes(role) ? role : "usuario";
-}
-
-function mergeRolePermissions(role, permissions) {
-  const preset = defaultPermissions(role);
-  const received = Array.isArray(permissions) ? permissions.filter(Boolean) : [];
-  return Array.from(new Set([...preset, ...received]));
-}
 
 function normalizeAccess(accessType) {
   return ["weekly", "monthly", "lifetime"].includes(accessType) ? accessType : "weekly";
@@ -318,7 +315,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.4.16");
+  res.setHeader("X-UpSystem-API", "1.0.1");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -344,7 +341,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.4.16", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.0.1", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -497,7 +494,7 @@ app.post("/users", auth, requirePermission("user_create"), async (req, res, next
     if (editing && !hasPermission(current, "user_edit")) return res.status(403).json({ error: "Sem permissão para editar usuários." });
     if (target?.username === "admin" || target?.id === "admin-root") return res.status(403).json({ error: "O Administrador principal não pode ser editado." });
 
-    const role = current.role === "adm" ? (req.body.role || "usuario") : "usuario";
+    const role = current.role === "adm" ? (normalizeRole(req.body.role) === "adm" ? "usuario" : normalizeRole(req.body.role)) : "usuario";
     const accessType = current.role === "adm" ? normalizeAccess(req.body.accessType) : (req.body.accessType === "lifetime" ? "monthly" : normalizeAccess(req.body.accessType));
 
     if (!editing && current.role === "parceiro") assertPartnerLimit(db, current, false);
@@ -516,7 +513,7 @@ app.post("/users", auth, requirePermission("user_create"), async (req, res, next
       user.accessType = accessType;
       user.expiresAt = req.body.expiresAt ?? calcExpiresAt(accessType);
       user.isActive = Boolean(req.body.isActive);
-      user.permissions = current.role === "adm" ? mergeRolePermissions(role, req.body.permissions) : ["control_repost"];
+      user.permissions = current.role === "adm" ? normalizePermissions({ role, permissions: req.body.permissions }) : defaultPermissions("usuario");
       user.accountLimit = role === "parceiro" ? normalizeLimit(req.body.accountLimit ?? user.accountLimit ?? 3) : null;
       user.updatedAt = nowIso();
       if (req.body.password) user.passwordHash = await bcrypt.hash(String(req.body.password), 10);
@@ -536,7 +533,7 @@ app.post("/users", auth, requirePermission("user_create"), async (req, res, next
         accessType,
         expiresAt: calcExpiresAt(accessType),
         isActive: true,
-        permissions: current.role === "adm" ? mergeRolePermissions(role, req.body.permissions) : ["control_repost"],
+        permissions: current.role === "adm" ? normalizePermissions({ role, permissions: req.body.permissions }) : defaultPermissions("usuario"),
         accountLimit: role === "parceiro" ? normalizeLimit(req.body.accountLimit ?? 3) : null,
         createdBy: current.role === "adm" ? null : current.username,
         createdByRole: current.role,
@@ -585,20 +582,22 @@ app.delete("/users/:id/device", auth, (req, res) => {
   res.json({ user: publicUser(target) });
 });
 
-app.delete("/users/:id", auth, requirePermission("user_delete"), (req, res) => {
-  const db = req.db;
-  if (req.user.role !== "adm") return res.status(403).json({ error: "Apenas Admin pode excluir usuários." });
+app.delete("/users/:id", auth, requirePermission("user_delete"), async (req, res, next) => {
+  try {
+    const db = req.db;
+    const target = db.users.find((u) => u.id === req.params.id || u.username === req.params.id);
+    if (!target) return res.json({ ok: true });
 
-  const target = db.users.find((u) => u.id === req.params.id);
-  if (!target) return res.json({ ok: true });
+    if (!canDeleteUser(req.user, target)) {
+      return res.status(403).json({ error: "Apenas Admin pode excluir usuários permitidos." });
+    }
 
-  if (target.role === "adm" || target.username === "admin" || target.id === req.user.id) {
-    return res.status(403).json({ error: "Este usuário não pode ser excluído." });
+    await deleteUserById(target.id);
+    db.users = db.users.filter((u) => u.id !== target.id);
+    res.json({ ok: true });
+  } catch (error) {
+    next(error);
   }
-
-  db.users = db.users.filter((u) => u.id !== req.params.id);
-  writeDb(db);
-  res.json({ ok: true });
 });
 
 app.get("/keys", auth, (req, res) => {
@@ -653,7 +652,7 @@ app.patch("/keys/:id/status", auth, (req, res) => {
 
 app.delete("/keys/:id", auth, async (req, res, next) => {
   try {
-    if (req.user.role !== "adm") return res.status(403).json({ error: "Apenas Admin pode excluir keys." });
+    if (!canDeleteKey(req.user)) return res.status(403).json({ error: "Apenas Admin pode excluir keys." });
 
     const key = (req.db.activationKeys || []).find((item) => item.id === req.params.id || item.code === req.params.id);
     if (!key) return res.json({ ok: true });
@@ -686,8 +685,12 @@ app.post("/keys", auth, requirePermission("user_create"), (req, res, next) => {
 
     if (current.role === "parceiro") assertPartnerLimit(db, current, true);
 
-    const role = current.role === "adm" ? normalizeRole(req.body.role) : "usuario";
-    const accessType = current.role === "adm" ? normalizeAccess(req.body.accessType) : (req.body.accessType === "lifetime" ? "monthly" : normalizeAccess(req.body.accessType));
+    const role = current.role === "adm" ? (normalizeRole(req.body.role) === "adm" ? "usuario" : normalizeRole(req.body.role)) : "usuario";
+    const requestedAccess = normalizeAccess(req.body.accessType);
+    if (!canCreateKey(current, requestedAccess)) {
+      return res.status(403).json({ error: "Parceiro só pode gerar keys semanais ou mensais." });
+    }
+    const accessType = requestedAccess;
     const keyHours = Math.max(1, Math.min(720, Number(req.body.keyHours || 24)));
 
     let code = shortKey();
@@ -700,7 +703,7 @@ app.post("/keys", auth, requirePermission("user_create"), (req, res, next) => {
       keyExpiresAt: new Date(Date.now() + keyHours * 60 * 60 * 1000).toISOString(),
       role,
       accessType,
-      permissions: defaultPermissions(role),
+      permissions: normalizePermissions(role),
       note: String(req.body.note || "").slice(0, 120),
       customerFirstName: customerFirstName.slice(0, 80),
       customerLastName: customerLastName.slice(0, 80),
@@ -801,7 +804,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.4.16",
+    version: "1.0.1",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
