@@ -52,7 +52,8 @@ const PERMISSIONS = {
   backup_import: "Importar backup",
   system_logs: "Log do Sistema",
   dev_tools: "Área Dev",
-  discord_integration: "Integração Discord"
+  discord_integration: "Integração Discord",
+  payments_integration: "Integração de pagamentos"
 };
 
 const ROLE_PERMISSIONS = {
@@ -197,6 +198,15 @@ async function ensureSchema() {
   `);
 
   await db.query(`
+    CREATE TABLE IF NOT EXISTS upsystem_discord_orders (
+      id TEXT PRIMARY KEY,
+      data JSONB NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+
+  await db.query(`
     CREATE INDEX IF NOT EXISTS idx_upsystem_logs_created_at
     ON upsystem_logs (created_at DESC)
   `);
@@ -209,6 +219,16 @@ async function ensureSchema() {
   await db.query(`
     CREATE INDEX IF NOT EXISTS idx_upsystem_system_logs_level
     ON upsystem_system_logs (level)
+  `);
+
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_upsystem_discord_orders_created_at
+    ON upsystem_discord_orders (created_at DESC)
+  `);
+
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_upsystem_discord_orders_status
+    ON upsystem_discord_orders ((data->>'status'))
   `);
 
   await ensureInitialData();
@@ -312,7 +332,7 @@ async function readDb() {
   await ensureSchema();
   const db = getPool();
 
-  const [users, keys, sites, logs, systemLogs] = await Promise.all([
+  const [users, keys, sites, logs, systemLogs, discordOrders] = await Promise.all([
     db.query("SELECT data FROM upsystem_users ORDER BY updated_at ASC"),
     db.query("SELECT data FROM upsystem_activation_keys ORDER BY updated_at ASC"),
     db.query("SELECT data FROM upsystem_sites ORDER BY id ASC"),
@@ -329,7 +349,8 @@ async function readDb() {
        ORDER BY created_at DESC
        LIMIT $1`,
       [MAX_SYSTEM_LOGS, SYSTEM_LOG_RETENTION_DAYS]
-    )
+    ),
+    db.query("SELECT data FROM upsystem_discord_orders ORDER BY created_at DESC LIMIT 100")
   ]);
 
   return {
@@ -337,7 +358,8 @@ async function readDb() {
     activationKeys: keys.rows.map(rowData),
     sites: sites.rows.map(rowData),
     logs: logs.rows.map(rowData).reverse(),
-    systemLogs: systemLogs.rows.map(rowData).reverse()
+    systemLogs: systemLogs.rows.map(rowData).reverse(),
+    discordOrders: discordOrders.rows.map(rowData)
   };
 }
 
@@ -425,6 +447,16 @@ async function writeDb(state) {
           ]
         );
       }
+    }
+
+    for (const order of state.discordOrders || []) {
+      if (!order?.id) continue;
+      await client.query(
+        `INSERT INTO upsystem_discord_orders (id, data, created_at, updated_at)
+         VALUES ($1, $2::jsonb, COALESCE($3::timestamptz, NOW()), NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        [order.id, JSON.stringify(order), order.createdAt || null]
+      );
     }
 
     await cleanupLogs(client);

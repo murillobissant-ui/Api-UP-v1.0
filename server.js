@@ -318,7 +318,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.0.5");
+  res.setHeader("X-UpSystem-API", "1.0.6");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -354,7 +354,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.0.5", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.0.6", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -813,6 +813,114 @@ app.get("/system-logs", auth, (req, res) => {
   res.json({ systemLogs: list.slice(-100) });
 });
 
+
+function envBool(name, fallback = false) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || raw === "") return fallback;
+  return ["1", "true", "yes", "on", "ativo", "enabled"].includes(String(raw).trim().toLowerCase());
+}
+
+function envText(name) {
+  return String(process.env[name] || "").trim();
+}
+
+function getPaymentConfig() {
+  const mercadoPago = {
+    enabled: envBool("MERCADOPAGO_ENABLED", false),
+    accessTokenPresent: Boolean(envText("MERCADOPAGO_ACCESS_TOKEN")),
+    webhookSecretPresent: Boolean(envText("MERCADOPAGO_WEBHOOK_SECRET")),
+    mode: envText("MERCADOPAGO_MODE") || "production",
+    configured: Boolean(envText("MERCADOPAGO_ACCESS_TOKEN"))
+  };
+
+  const paypalMode = (envText("PAYPAL_MODE") || "sandbox").toLowerCase() === "live" ? "live" : "sandbox";
+  const paypal = {
+    enabled: envBool("PAYPAL_ENABLED", false),
+    clientIdPresent: Boolean(envText("PAYPAL_CLIENT_ID")),
+    clientSecretPresent: Boolean(envText("PAYPAL_CLIENT_SECRET")),
+    webhookIdPresent: Boolean(envText("PAYPAL_WEBHOOK_ID")),
+    mode: paypalMode,
+    configured: Boolean(envText("PAYPAL_CLIENT_ID") && envText("PAYPAL_CLIENT_SECRET"))
+  };
+
+  return {
+    mercadoPago,
+    paypal,
+    phase3: {
+      stripe: "aguardando",
+      paddle: "aguardando",
+      lemonSqueezy: "aguardando"
+    },
+    prepared: true,
+    message: "Pagamentos preparados para Mercado Pago e PayPal. Nenhuma cobrança real é criada nesta versão."
+  };
+}
+
+function getPublicPaymentStatus(config = getPaymentConfig()) {
+  return {
+    mercadoPago: {
+      enabled: config.mercadoPago.enabled,
+      configured: config.mercadoPago.configured,
+      accessTokenConfigured: config.mercadoPago.accessTokenPresent,
+      webhookSecretConfigured: config.mercadoPago.webhookSecretPresent,
+      mode: config.mercadoPago.mode
+    },
+    paypal: {
+      enabled: config.paypal.enabled,
+      configured: config.paypal.configured,
+      clientIdConfigured: config.paypal.clientIdPresent,
+      clientSecretConfigured: config.paypal.clientSecretPresent,
+      webhookIdConfigured: config.paypal.webhookIdPresent,
+      mode: config.paypal.mode
+    },
+    phase3: config.phase3,
+    prepared: config.prepared,
+    message: config.message
+  };
+}
+
+function requirePaymentsAdmin(req, res) {
+  if (req.user?.role !== "adm") {
+    res.status(403).json({ error: "Apenas Admin pode acessar pagamentos." });
+    return false;
+  }
+  return true;
+}
+
+function normalizeOrderPlan(plan) {
+  return ["weekly", "monthly", "lifetime"].includes(plan) ? plan : "monthly";
+}
+
+function normalizePaymentProvider(provider) {
+  return ["mercadopago", "paypal"].includes(provider) ? provider : "mercadopago";
+}
+
+function createPreparedOrder(body = {}, user = null) {
+  const provider = normalizePaymentProvider(String(body.provider || body.paymentProvider || "mercadopago").toLowerCase());
+  const plan = normalizeOrderPlan(String(body.plan || "monthly").toLowerCase());
+  const currency = String(body.currency || (provider === "paypal" ? "USD" : "BRL")).toUpperCase().slice(0, 10);
+  const amount = Number(body.amount || 0);
+  return {
+    id: makeId("discord-order"),
+    source: "discord",
+    status: "prepared",
+    provider,
+    plan,
+    currency,
+    amount: Number.isFinite(amount) && amount > 0 ? amount : null,
+    discordUserId: String(body.discordUserId || "").slice(0, 80) || null,
+    discordUsername: String(body.discordUsername || "").slice(0, 120) || null,
+    customerEmail: String(body.customerEmail || "").slice(0, 180) || null,
+    paymentId: null,
+    paymentStatus: "not_created",
+    keyCode: null,
+    note: "Pedido preparado. Pagamento real e geração automática serão ativados em etapa posterior.",
+    createdBy: user?.username || null,
+    createdAt: nowIso(),
+    updatedAt: nowIso()
+  };
+}
+
 function requireDiscordAdmin(req, res) {
   if (!hasPermission(req.user, "discord_integration") || req.user.role !== "adm") {
     res.status(403).json({ error: "Apenas Admin pode acessar a integração Discord." });
@@ -911,6 +1019,58 @@ app.post("/discord/test", auth, async (req, res, next) => {
   }
 });
 
+
+app.get("/payments/status", auth, (req, res) => {
+  if (!requirePaymentsAdmin(req, res)) return;
+  res.json({ ok: true, payments: getPublicPaymentStatus() });
+});
+
+app.get("/discord/orders", auth, (req, res) => {
+  if (!requirePaymentsAdmin(req, res)) return;
+  const orders = Array.isArray(req.db.discordOrders) ? req.db.discordOrders : [];
+  res.json({ ok: true, orders: orders.slice(0, 100) });
+});
+
+app.post("/discord/orders", auth, async (req, res, next) => {
+  try {
+    if (!requirePaymentsAdmin(req, res)) return;
+    const order = createPreparedOrder(req.body || {}, req.user);
+    req.db.discordOrders = [order, ...(Array.isArray(req.db.discordOrders) ? req.db.discordOrders : [])].slice(0, 100);
+    await writeDb(req.db);
+    res.status(201).json({ ok: true, order });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/webhooks/mercadopago", async (req, res) => {
+  const config = getPaymentConfig().mercadoPago;
+  if (!config.enabled || !config.configured) {
+    await appendSystemLog({
+      level: "info",
+      origin: "api.webhook.mercadopago",
+      message: "Webhook Mercado Pago recebido em modo preparado/desativado.",
+      context: { enabled: config.enabled, configured: config.configured }
+    }).catch(() => null);
+    return res.status(202).json({ ok: true, ignored: true, reason: "mercadopago_disabled_or_unconfigured" });
+  }
+  return res.status(202).json({ ok: true, received: true, message: "Webhook Mercado Pago preparado para implementação de confirmação automática." });
+});
+
+app.post("/webhooks/paypal", async (req, res) => {
+  const config = getPaymentConfig().paypal;
+  if (!config.enabled || !config.configured) {
+    await appendSystemLog({
+      level: "info",
+      origin: "api.webhook.paypal",
+      message: "Webhook PayPal recebido em modo preparado/desativado.",
+      context: { enabled: config.enabled, configured: config.configured }
+    }).catch(() => null);
+    return res.status(202).json({ ok: true, ignored: true, reason: "paypal_disabled_or_unconfigured" });
+  }
+  return res.status(202).json({ ok: true, received: true, message: "Webhook PayPal preparado para implementação de confirmação automática." });
+});
+
 app.delete("/system-logs", auth, async (req, res, next) => {
   try {
     if (!canReadSystemLogs(req.user)) return res.status(403).json({ error: "Sem permissão." });
@@ -927,7 +1087,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.0.5",
+    version: "1.0.6",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
