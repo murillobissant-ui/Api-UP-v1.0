@@ -1,7 +1,7 @@
 {
   "name": "upsystem-api",
-  "version": "1.0.10",
-  "description": "API online para UpSysteM v1.0.10 com PostgreSQL/Supabase",
+  "version": "1.0.11",
+  "description": "API online para UpSysteM v1.0.11 com PostgreSQL/Supabase",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -14,7 +14,8 @@
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
     "uuid": "^10.0.0",
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "discord.js": "^14.16.3"
   },
   "engines": {
     "node": ">=18"

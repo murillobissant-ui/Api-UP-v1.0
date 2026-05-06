@@ -318,7 +318,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.0.10");
+  res.setHeader("X-UpSystem-API", "1.0.11");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -354,7 +354,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.0.10", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.0.11", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -854,7 +854,7 @@ function getPaymentConfig() {
       lemonSqueezy: "aguardando"
     },
     prepared: true,
-    message: "Doações preparadas para Mercado Pago e PayPal. Nenhuma key é gerada automaticamente nesta etapa."
+    message: "Doações preparadas para Mercado Pago e PayPal. Pagamentos aprovados podem gerar key automaticamente quando vinculados a uma doação."
   };
 }
 
@@ -905,6 +905,175 @@ function normalizeDonationAmount(value) {
   const amount = Number(value);
   if (!Number.isFinite(amount) || amount <= 0) return null;
   return Math.round(amount * 100) / 100;
+}
+
+
+function defaultDonationAmount(plan) {
+  const normalized = normalizeDonationPlan(plan);
+  const envName = normalized === "weekly" ? "MERCADOPAGO_DONATION_WEEKLY_BRL" : "MERCADOPAGO_DONATION_MONTHLY_BRL";
+  return normalizeDonationAmount(process.env[envName]) || (normalized === "weekly" ? 1 : 1);
+}
+
+function donationKeyHours() {
+  const hours = Number.parseInt(process.env.DISCORD_DONATION_KEY_HOURS || "168", 10);
+  return Number.isFinite(hours) && hours > 0 ? Math.min(hours, 720) : 168;
+}
+
+function truncateDiscordText(value, max = 1900) {
+  const text = String(value || "");
+  return text.length > max ? `${text.slice(0, max - 20)}\n...` : text;
+}
+
+async function sendDiscordChannelMessage(channelId, content, embeds = []) {
+  const config = getDiscordConfig();
+  if (!config.tokenPresent || !channelId) return { ok: false, skipped: true };
+  const response = await fetch(`https://discord.com/api/v10/channels/${encodeURIComponent(channelId)}/messages`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bot ${config.token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ content: truncateDiscordText(content, 1900), embeds })
+  });
+  const body = await response.text().catch(() => "");
+  if (!response.ok) {
+    const error = new Error(`Falha ao enviar mensagem Discord (${response.status}). ${body.slice(0, 300)}`);
+    error.status = response.status;
+    throw error;
+  }
+  return { ok: true };
+}
+
+async function sendDiscordDm(userId, content) {
+  const config = getDiscordConfig();
+  if (!config.tokenPresent || !userId) return { ok: false, skipped: true, reason: "missing_token_or_user" };
+  const dmResponse = await fetch("https://discord.com/api/v10/users/@me/channels", {
+    method: "POST",
+    headers: {
+      Authorization: `Bot ${config.token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ recipient_id: String(userId) })
+  });
+  const dmBody = await dmResponse.json().catch(() => ({}));
+  if (!dmResponse.ok || !dmBody?.id) {
+    return { ok: false, status: dmResponse.status, reason: dmBody?.message || "Falha ao abrir DM." };
+  }
+  const msgResponse = await fetch(`https://discord.com/api/v10/channels/${encodeURIComponent(dmBody.id)}/messages`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bot ${config.token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ content: truncateDiscordText(content, 1900) })
+  });
+  const msgBody = await msgResponse.json().catch(() => ({}));
+  if (!msgResponse.ok) {
+    return { ok: false, status: msgResponse.status, reason: msgBody?.message || "Falha ao enviar DM." };
+  }
+  return { ok: true, channelId: dmBody.id };
+}
+
+function ensureDiscordOrderArray(db) {
+  if (!Array.isArray(db.discordOrders)) db.discordOrders = [];
+  return db.discordOrders;
+}
+
+function ensureActivationKeyArray(db) {
+  if (!Array.isArray(db.activationKeys)) db.activationKeys = [];
+  return db.activationKeys;
+}
+
+function buildDonationKey(db, order, payment = {}) {
+  const keys = ensureActivationKeyArray(db);
+  let code = shortKey();
+  while (keys.some((item) => item.code === code)) code = shortKey();
+  const username = order.discordUsername || order.discordDisplayName || "Discord";
+  const key = {
+    id: makeId("key"),
+    code,
+    createdAt: nowIso(),
+    keyExpiresAt: new Date(Date.now() + donationKeyHours() * 60 * 60 * 1000).toISOString(),
+    role: "usuario",
+    accessType: normalizeDonationPlan(order.plan),
+    permissions: normalizePermissions("usuario"),
+    note: "Key de agradecimento gerada automaticamente por doação via Discord/Mercado Pago.",
+    customerFirstName: String(username).slice(0, 80),
+    customerLastName: "Discord",
+    customerEmail: String(order.customerEmail || "discord@upsystem.local").slice(0, 120),
+    createdBy: "discord",
+    createdByRole: "system",
+    status: "available",
+    usedAt: null,
+    usedBy: null,
+    source: "discord",
+    donationId: order.id,
+    paymentId: String(payment.id || order.paymentId || ""),
+    discordUserId: order.discordUserId || null,
+    discordUsername: order.discordUsername || null,
+    discordDisplayName: order.discordDisplayName || null
+  };
+  keys.push(key);
+  return key;
+}
+
+async function finalizeApprovedDonation(db, order, payment = {}) {
+  if (!order) return { ok: false, reason: "order_not_found" };
+  const alreadyHasKey = Boolean(order.keyCode || order.keyId);
+  order.paymentId = String(payment.id || order.paymentId || "");
+  order.paymentStatus = String(payment.status || order.paymentStatus || "approved");
+  order.mpStatusDetail = String(payment.status_detail || order.mpStatusDetail || "");
+  order.status = alreadyHasKey ? (order.deliveryStatus || "key_gerada") : "doacao_confirmada";
+  order.donationStatus = alreadyHasKey ? (order.deliveryStatus || "key_gerada") : "doacao_confirmada";
+  order.paidAt = order.paidAt || payment.date_approved || nowIso();
+  order.updatedAt = nowIso();
+
+  let key = null;
+  if (!alreadyHasKey) {
+    key = buildDonationKey(db, order, payment);
+    order.keyId = key.id;
+    order.keyCode = key.code;
+    order.keyStatus = "generated";
+    order.status = "key_gerada";
+    order.donationStatus = "key_gerada";
+    order.note = "Doação confirmada. Key gerada automaticamente.";
+  }
+
+  if (order.discordUserId && order.keyCode && order.deliveryStatus !== "key_entregue") {
+    const dmText = [
+      "Obrigado pela sua doação ao UpSysteM.",
+      "",
+      `Sua key de acesso: ${order.keyCode}`,
+      `Plano: ${donationPlanLabel(order.plan)}`,
+      "",
+      "Use essa key na extensão para ativar seu acesso."
+    ].join("\n");
+    const delivery = await sendDiscordDm(order.discordUserId, dmText).catch((error) => ({ ok: false, reason: error.message || "Falha ao enviar DM." }));
+    order.deliveryAttemptedAt = nowIso();
+    if (delivery.ok) {
+      order.deliveryStatus = "key_entregue";
+      order.status = "key_entregue";
+      order.donationStatus = "key_entregue";
+      order.deliveredAt = nowIso();
+      await sendDiscordChannelMessage(getDiscordConfig().logChannelId, `✅ Doação confirmada e key entregue por DM. Usuário: <@${order.discordUserId}> · Plano: ${donationPlanLabel(order.plan)} · Key: ${order.keyCode}`).catch(() => null);
+    } else {
+      order.deliveryStatus = "falha_na_entrega";
+      order.status = "falha_na_entrega";
+      order.donationStatus = "falha_na_entrega";
+      order.deliveryError = delivery.reason || "Não foi possível enviar DM ao usuário.";
+      await appendSystemLog({
+        level: "warning",
+        origin: "api.discord.delivery",
+        message: "Falha ao entregar key por DM.",
+        context: { orderId: order.id, discordUserId: order.discordUserId, reason: order.deliveryError }
+      }).catch(() => null);
+      await sendDiscordChannelMessage(getDiscordConfig().logChannelId, `⚠️ Doação confirmada, mas falhou a entrega por DM. Usuário: <@${order.discordUserId}> · Key: ${order.keyCode}`).catch(() => null);
+    }
+    order.updatedAt = nowIso();
+  }
+
+  db.discordOrders = [order, ...ensureDiscordOrderArray(db).filter((item) => item.id !== order.id)].slice(0, 100);
+  return { ok: true, order, key, alreadyHasKey };
 }
 
 function mercadoPagoTokenDiagnostic(config = {}) {
@@ -968,7 +1137,7 @@ function createPreparedOrder(body = {}, user = null) {
   const provider = normalizePaymentProvider(String(body.provider || body.paymentProvider || "mercadopago").toLowerCase());
   const plan = normalizeDonationPlan(String(body.plan || "monthly").toLowerCase());
   const currency = String(body.currency || (provider === "paypal" ? "USD" : "BRL")).toUpperCase().slice(0, 10);
-  const amount = normalizeDonationAmount(body.amount);
+  const amount = normalizeDonationAmount(body.amount) || defaultDonationAmount(plan);
   return {
     id: makeId("donation"),
     source: "discord_donation",
@@ -980,13 +1149,22 @@ function createPreparedOrder(body = {}, user = null) {
     amount,
     discordUserId: String(body.discordUserId || "").slice(0, 80) || null,
     discordUsername: String(body.discordUsername || "").slice(0, 120) || null,
+    discordDisplayName: String(body.discordDisplayName || "").slice(0, 120) || null,
+    discordChannelId: String(body.discordChannelId || "").slice(0, 80) || null,
+    discordGuildId: String(body.discordGuildId || "").slice(0, 80) || null,
     customerEmail: String(body.customerEmail || "").slice(0, 180) || null,
     paymentId: null,
     paymentStatus: "not_created",
     paymentUrl: null,
+    pixQrCode: null,
+    pixQrCodeBase64: null,
+    pixTicketUrl: null,
+    keyId: null,
     keyCode: null,
-    note: "Doação preparada. A geração automática da key será ativada em etapa posterior.",
-    createdBy: user?.username || null,
+    keyStatus: null,
+    deliveryStatus: null,
+    note: "Doação preparada. A key será gerada automaticamente quando o pagamento aprovado for confirmado.",
+    createdBy: user?.username || "discord",
     createdAt: nowIso(),
     updatedAt: nowIso()
   };
@@ -1042,6 +1220,63 @@ async function createMercadoPagoPreference(order, config) {
     error.details = data;
     error.mpPayload = payload;
     error.mpDiagnostic = mercadoPagoErrorDiagnostic(error, config, payload);
+    throw error;
+  }
+
+  return data;
+}
+
+
+async function createMercadoPagoPixPayment(order, config) {
+  const notificationUrl = envText("MERCADOPAGO_NOTIFICATION_URL") || envText("MERCADOPAGO_WEBHOOK_URL") || "";
+  if (!order.customerEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(order.customerEmail)) {
+    const error = new Error("Informe um e-mail válido para gerar Pix Mercado Pago.");
+    error.status = 400;
+    throw error;
+  }
+
+  const payload = {
+    transaction_amount: Number(order.amount),
+    description: `Doação UpSysteM - Key ${donationPlanLabel(order.plan)}`,
+    payment_method_id: "pix",
+    external_reference: order.id,
+    notification_url: notificationUrl || undefined,
+    metadata: {
+      upsystem_order_id: order.id,
+      source: "upsystem_discord_donation",
+      plan: order.plan,
+      discord_user_id: order.discordUserId || undefined
+    },
+    payer: {
+      email: order.customerEmail,
+      first_name: order.discordDisplayName || order.discordUsername || "Discord",
+      last_name: "UpSysteM"
+    }
+  };
+
+  const response = await fetch("https://api.mercadopago.com/v1/payments", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${config.accessToken}`,
+      "Content-Type": "application/json",
+      "X-Idempotency-Key": order.id
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = data?.message || data?.error || `Falha ao criar pagamento Pix Mercado Pago (${response.status}).`;
+    const error = new Error(message);
+    error.status = response.status;
+    error.details = data;
+    error.mpPayload = payload;
+    error.mpDiagnostic = mercadoPagoErrorDiagnostic(error, config, {
+      external_reference: payload.external_reference,
+      items: [{ currency_id: "BRL", unit_price: payload.transaction_amount }],
+      notification_url: payload.notification_url,
+      payer: payload.payer
+    });
     throw error;
   }
 
@@ -1106,7 +1341,7 @@ function getPublicDiscordStatus(config = getDiscordConfig()) {
     logChannelId: config.logChannelId || null,
     mode: config.enabled ? "ready_to_connect" : "prepared_disabled",
     message: config.enabled
-      ? "Discord configurado para futura ativação. Nenhum comando de doação foi iniciado nesta versão."
+      ? "Discord ativo. Comando /doar disponível quando o bot estiver conectado."
       : "Discord preparado, mas desativado por DISCORD_ENABLED=false."
   };
 }
@@ -1238,20 +1473,45 @@ app.post("/webhooks/mercadopago", async (req, res) => {
       level: "info",
       origin: "api.webhook.mercadopago",
       message: "Webhook Mercado Pago recebido em modo preparado/desativado.",
-      context: { enabled: config.enabled, configured: config.configured }
+      context: { enabled: config.enabled, configured: config.configured, body: req.body || null }
     }).catch(() => null);
     return res.status(202).json({ ok: true, ignored: true, reason: "mercadopago_disabled_or_unconfigured" });
   }
 
   try {
     const paymentId = String(req.body?.data?.id || req.body?.id || req.query?.id || "").trim();
-    if (!paymentId) return res.status(202).json({ ok: true, received: true, message: "Webhook recebido sem payment id." });
+    const eventType = String(req.body?.type || req.query?.type || "").trim();
+    const action = String(req.body?.action || "").trim();
+    if (!paymentId) {
+      await appendSystemLog({
+        level: "info",
+        origin: "api.webhook.mercadopago",
+        message: "Webhook Mercado Pago recebido sem payment id.",
+        context: { eventType, action, body: req.body || null }
+      }).catch(() => null);
+      return res.status(202).json({ ok: true, received: true, message: "Webhook recebido sem payment id." });
+    }
 
     const payment = await fetchMercadoPagoPayment(paymentId, config);
     const externalReference = String(payment.external_reference || payment.metadata?.upsystem_order_id || "").trim();
     const db = await readDb();
     const order = findDonationOrder(db, externalReference);
 
+    await appendSystemLog({
+      level: order ? "info" : "warning",
+      origin: "api.webhook.mercadopago",
+      message: order ? "Webhook Mercado Pago vinculado à doação." : "Webhook Mercado Pago sem doação vinculada.",
+      context: {
+        eventType,
+        action,
+        paymentId,
+        externalReference,
+        paymentStatus: payment.status || null,
+        matched: Boolean(order)
+      }
+    }).catch(() => null);
+
+    let finalized = null;
     if (order) {
       order.paymentId = String(payment.id || paymentId);
       order.paymentStatus = String(payment.status || "unknown");
@@ -1259,20 +1519,26 @@ app.post("/webhooks/mercadopago", async (req, res) => {
       order.updatedAt = nowIso();
 
       if (payment.status === "approved") {
-        order.status = "doacao_confirmada";
-        order.donationStatus = "doacao_confirmada";
-        order.paidAt = payment.date_approved || nowIso();
-        order.note = "Doação confirmada pelo Mercado Pago. Key ainda não foi gerada automaticamente nesta etapa.";
+        finalized = await finalizeApprovedDonation(db, order, payment);
       } else {
         order.status = "aguardando_doacao";
         order.donationStatus = "aguardando_doacao";
+        db.discordOrders = [order, ...ensureDiscordOrderArray(db).filter((item) => item.id !== order.id)].slice(0, 100);
       }
 
-      db.discordOrders = [order, ...db.discordOrders.filter((item) => item.id !== order.id)].slice(0, 100);
       await writeDb(db);
     }
 
-    return res.status(202).json({ ok: true, received: true, paymentId, externalReference, matched: Boolean(order) });
+    return res.status(202).json({
+      ok: true,
+      received: true,
+      paymentId,
+      externalReference,
+      matched: Boolean(order),
+      status: payment.status || null,
+      keyGenerated: Boolean(finalized?.key),
+      deliveryStatus: finalized?.order?.deliveryStatus || null
+    });
   } catch (error) {
     await appendSystemLog({
       level: "warning",
@@ -1298,6 +1564,192 @@ app.post("/webhooks/paypal", async (req, res) => {
   return res.status(202).json({ ok: true, received: true, message: "Webhook PayPal preparado para implementação de confirmação automática." });
 });
 
+
+let discordBotStarted = false;
+let discordClient = null;
+
+async function startDiscordBot() {
+  const config = getDiscordConfig();
+  if (discordBotStarted || !config.enabled) return;
+  discordBotStarted = true;
+
+  if (!config.configured) {
+    console.log("Discord habilitado, mas configuração incompleta no Render.");
+    return;
+  }
+
+  let discord;
+  try {
+    discord = require("discord.js");
+  } catch (error) {
+    console.log("discord.js não instalado. Comandos Discord não serão iniciados.");
+    await appendSystemLog({
+      level: "warning",
+      origin: "api.discord.bot",
+      message: "discord.js não instalado. Instale a dependência para ativar comandos Discord.",
+      context: { error: error.message }
+    }).catch(() => null);
+    return;
+  }
+
+  const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, AttachmentBuilder } = discord;
+
+  const commands = [
+    new SlashCommandBuilder()
+      .setName("doar")
+      .setDescription("Criar uma doação UpSysteM e receber uma key após a confirmação.")
+      .addStringOption((option) => option
+        .setName("plano")
+        .setDescription("Plano da key de agradecimento")
+        .setRequired(true)
+        .addChoices(
+          { name: "Semanal", value: "weekly" },
+          { name: "Mensal", value: "monthly" }
+        ))
+      .addStringOption((option) => option
+        .setName("email")
+        .setDescription("E-mail usado para gerar o Pix Mercado Pago")
+        .setRequired(true))
+      .addNumberOption((option) => option
+        .setName("valor")
+        .setDescription("Valor da contribuição em BRL. Se vazio, usa o valor padrão do plano.")
+        .setRequired(false))
+  ].map((command) => command.toJSON());
+
+  const rest = new REST({ version: "10" }).setToken(config.token);
+  try {
+    await rest.put(Routes.applicationGuildCommands(config.clientId, config.guildId), { body: commands });
+    console.log("Comandos Discord registrados para o servidor configurado.");
+  } catch (error) {
+    console.error("Falha ao registrar comandos Discord:", error);
+    await appendSystemLog({
+      level: "warning",
+      origin: "api.discord.commands",
+      message: error.message || "Falha ao registrar comandos Discord.",
+      context: { status: error.status || null }
+    }).catch(() => null);
+  }
+
+  discordClient = new Client({ intents: [GatewayIntentBits.Guilds] });
+
+  discordClient.once("ready", () => {
+    console.log(`Discord bot conectado como ${discordClient.user?.tag || "bot"}.`);
+  });
+
+  discordClient.on("interactionCreate", async (interaction) => {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== "doar") return;
+
+    try {
+      const mpConfig = getPaymentConfig().mercadoPago;
+      if (!mpConfig.enabled || !mpConfig.configured) {
+        return interaction.reply({ content: "As doações Mercado Pago ainda não estão ativas. Tente novamente mais tarde.", ephemeral: true });
+      }
+
+      const plan = normalizeDonationPlan(interaction.options.getString("plano", true));
+      const email = String(interaction.options.getString("email", true) || "").trim();
+      const amount = normalizeDonationAmount(interaction.options.getNumber("valor")) || defaultDonationAmount(plan);
+
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return interaction.reply({ content: "Informe um e-mail válido para gerar o Pix Mercado Pago.", ephemeral: true });
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+
+      const db = await readDb();
+      const order = createPreparedOrder({
+        provider: "mercadopago",
+        currency: "BRL",
+        plan,
+        amount,
+        customerEmail: email,
+        discordUserId: interaction.user.id,
+        discordUsername: interaction.user.username,
+        discordDisplayName: interaction.member?.displayName || interaction.user.globalName || interaction.user.username,
+        discordChannelId: interaction.channelId,
+        discordGuildId: interaction.guildId
+      }, { username: "discord" });
+
+      order.status = "aguardando_doacao";
+      order.donationStatus = "aguardando_doacao";
+      order.paymentStatus = "pix_created";
+      order.externalReference = order.id;
+      order.note = "Doação criada pelo comando /doar. A key será entregue por DM após a confirmação do pagamento.";
+
+      const payment = await createMercadoPagoPixPayment(order, mpConfig);
+      const transactionData = payment?.point_of_interaction?.transaction_data || {};
+      order.paymentId = String(payment.id || "");
+      order.paymentStatus = String(payment.status || "pending");
+      order.pixQrCode = transactionData.qr_code || null;
+      order.pixQrCodeBase64 = transactionData.qr_code_base64 || null;
+      order.pixTicketUrl = transactionData.ticket_url || null;
+      order.paymentUrl = transactionData.ticket_url || null;
+      order.updatedAt = nowIso();
+
+      db.discordOrders = [order, ...ensureDiscordOrderArray(db)].slice(0, 100);
+      await writeDb(db);
+
+      const lines = [
+        "Sua doação foi criada.",
+        `Plano: ${donationPlanLabel(plan)}`,
+        `Valor: R$ ${Number(amount).toFixed(2)}`,
+        "Status: aguardando doação",
+        "",
+        order.pixTicketUrl ? `Link Mercado Pago: ${order.pixTicketUrl}` : "",
+        order.pixQrCode ? `Pix copia e cola:\n\`${truncateDiscordText(order.pixQrCode, 900)}\`` : "",
+        "",
+        "Após a confirmação do pagamento, sua key será enviada automaticamente por DM."
+      ].filter(Boolean);
+
+      const files = [];
+      if (order.pixQrCodeBase64) {
+        try {
+          files.push(new AttachmentBuilder(Buffer.from(order.pixQrCodeBase64, "base64"), { name: "upsystem-pix-qrcode.png" }));
+        } catch (_) {}
+      }
+
+      await interaction.editReply({ content: truncateDiscordText(lines.join("\n"), 1900), files });
+
+      await sendDiscordChannelMessage(
+        config.logChannelId,
+        `🟡 Nova doação criada pelo Discord. Usuário: <@${interaction.user.id}> · Plano: ${donationPlanLabel(plan)} · Valor: R$ ${Number(amount).toFixed(2)} · Status: aguardando_doacao`
+      ).catch(() => null);
+    } catch (error) {
+      await appendSystemLog({
+        level: "warning",
+        origin: "api.discord.command.doar",
+        message: error.message || "Falha no comando /doar.",
+        context: { status: error.status || null }
+      }).catch(() => null);
+
+      const content = "Não foi possível criar sua doação agora. O administrador foi avisado para verificar a integração.";
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply({ content }).catch(() => null);
+      } else {
+        await interaction.reply({ content, ephemeral: true }).catch(() => null);
+      }
+    }
+  });
+
+  discordClient.on("error", (error) => {
+    appendSystemLog({
+      level: "warning",
+      origin: "api.discord.bot",
+      message: error.message || "Erro no bot Discord."
+    }).catch(() => null);
+  });
+
+  try {
+    await discordClient.login(config.token);
+  } catch (error) {
+    console.error("Falha ao conectar Discord bot:", error);
+    await appendSystemLog({
+      level: "warning",
+      origin: "api.discord.login",
+      message: error.message || "Falha ao conectar Discord bot."
+    }).catch(() => null);
+  }
+}
+
 app.delete("/system-logs", auth, async (req, res, next) => {
   try {
     if (!canReadSystemLogs(req.user)) return res.status(403).json({ error: "Sem permissão." });
@@ -1314,7 +1766,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.0.10",
+    version: "1.0.11",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
@@ -1417,4 +1869,12 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
   console.log(`UpSysteM API online na porta ${PORT}`);
+  startDiscordBot().catch((error) => {
+    console.error("Falha ao iniciar bot Discord:", error);
+    appendSystemLog({
+      level: "warning",
+      origin: "api.discord.start",
+      message: error.message || "Falha ao iniciar bot Discord."
+    }).catch(() => null);
+  });
 });
