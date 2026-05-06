@@ -318,7 +318,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.0.13");
+  res.setHeader("X-UpSystem-API", "1.0.14");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -354,7 +354,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.0.13", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.0.14", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -831,6 +831,7 @@ function getPaymentConfig() {
     accessToken: mpAccessToken,
     accessTokenPresent: Boolean(mpAccessToken),
     webhookSecretPresent: Boolean(envText("MERCADOPAGO_WEBHOOK_SECRET")),
+    notificationUrl: envText("MERCADOPAGO_NOTIFICATION_URL") || envText("MERCADOPAGO_WEBHOOK_URL") || "",
     mode: envText("MERCADOPAGO_MODE") || "production",
     configured: Boolean(mpAccessToken)
   };
@@ -865,6 +866,7 @@ function getPublicPaymentStatus(config = getPaymentConfig()) {
       configured: config.mercadoPago.configured,
       accessTokenConfigured: config.mercadoPago.accessTokenPresent,
       webhookSecretConfigured: config.mercadoPago.webhookSecretPresent,
+      notificationUrl: config.mercadoPago.notificationUrl || null,
       mode: config.mercadoPago.mode
     },
     paypal: {
@@ -905,6 +907,29 @@ function normalizeDonationAmount(value) {
   const amount = Number(value);
   if (!Number.isFinite(amount) || amount <= 0) return null;
   return Math.round(amount * 100) / 100;
+}
+
+function cancelExpiredDonations(db, minutes = 5) {
+  if (!db || !Array.isArray(db.discordOrders)) return { changed: false, count: 0 };
+  const now = Date.now();
+  let count = 0;
+  db.discordOrders = db.discordOrders.map((order) => {
+    const status = String(order.donationStatus || order.status || "");
+    if (status !== "aguardando_doacao") return order;
+    if (order.paymentStatus === "approved" || order.mercadoPagoStatus === "approved" || order.keyCode) return order;
+    const created = new Date(order.createdAt || order.created_at || 0).getTime();
+    if (!created || now - created < minutes * 60 * 1000) return order;
+    count += 1;
+    return {
+      ...order,
+      status: "cancelado",
+      donationStatus: "cancelado",
+      cancelReason: `Expirado por falta de pagamento em ${minutes} minutos.`,
+      canceledAt: nowIso(),
+      updatedAt: nowIso()
+    };
+  });
+  return { changed: count > 0, count };
 }
 
 
@@ -1034,6 +1059,7 @@ function getDiscordTemplates(db) {
   const existing = Array.isArray(db.discordTemplates) ? db.discordTemplates : [];
   const map = new Map(defaultDiscordTemplates().map((tpl) => [tpl.id, tpl]));
   for (const tpl of existing) {
+    if (tpl?.id && String(tpl.id).startsWith("__")) continue;
     if (tpl?.id && map.has(tpl.id)) map.set(tpl.id, { ...map.get(tpl.id), ...tpl });
   }
   return Array.from(map.values());
@@ -1276,7 +1302,7 @@ function createPreparedOrder(body = {}, user = null) {
   const amount = normalizeDonationAmount(body.amount) || defaultDonationAmount(plan);
   return {
     id: makeId("donation"),
-    source: "discord_donation",
+    source: String(body.source || "discord_donation").slice(0, 80),
     status: "preparada",
     donationStatus: "preparada",
     provider,
@@ -1441,44 +1467,56 @@ function requireDiscordAdmin(req, res) {
   return true;
 }
 
-function getDiscordConfig() {
-  const enabled = String(process.env.DISCORD_ENABLED || "false").toLowerCase() === "true";
-  const clientId = String(process.env.DISCORD_CLIENT_ID || "").trim();
-  const guildId = String(process.env.DISCORD_GUILD_ID || "").trim();
-  const salesChannelId = String(process.env.DISCORD_SALES_CHANNEL_ID || "").trim();
-  const panelChannelId = String(process.env.DISCORD_DONATION_PANEL_CHANNEL_ID || process.env.DISCORD_SALES_CHANNEL_ID || "").trim();
-  const logChannelId = String(process.env.DISCORD_LOG_CHANNEL_ID || "").trim();
-  const validationCategoryId = String(process.env.DISCORD_VALIDATION_CATEGORY_ID || "").trim();
-  const staffRoleId = String(process.env.DISCORD_STAFF_ROLE_ID || process.env.DISCORD_ROLE_ADMIRO_ID || "").trim();
-  const verifyChannelId = String(process.env.DISCORD_VERIFY_CHANNEL_ID || "").trim();
-  const userRoleId = String(process.env.DISCORD_ROLE_USER_ID || "").trim();
-  const roleAdmiroId = String(process.env.DISCORD_ROLE_ADMIRO_ID || "").trim();
-  const roleParceiroId = String(process.env.DISCORD_ROLE_PARCEIRO_ID || "").trim();
-  const roleClientesId = String(process.env.DISCORD_ROLE_CLIENTES_ID || "").trim();
-  const roleDevId = String(process.env.DISCORD_ROLE_DEV_ID || "").trim();
+function discordEnvConfig() {
+  return {
+    enabled: envBool("DISCORD_ENABLED", false),
+    clientId: envText("DISCORD_CLIENT_ID"),
+    guildId: envText("DISCORD_GUILD_ID"),
+    salesChannelId: envText("DISCORD_SALES_CHANNEL_ID"),
+    panelChannelId: envText("DISCORD_DONATION_PANEL_CHANNEL_ID") || envText("DISCORD_SALES_CHANNEL_ID"),
+    logChannelId: envText("DISCORD_LOG_CHANNEL_ID"),
+    validationCategoryId: envText("DISCORD_VALIDATION_CATEGORY_ID"),
+    staffRoleId: envText("DISCORD_STAFF_ROLE_ID") || envText("DISCORD_ROLE_ADMIRO_ID"),
+    verifyChannelId: envText("DISCORD_VERIFY_CHANNEL_ID"),
+    userRoleId: envText("DISCORD_ROLE_USER_ID"),
+    roleAdmiroId: envText("DISCORD_ROLE_ADMIRO_ID"),
+    roleParceiroId: envText("DISCORD_ROLE_PARCEIRO_ID"),
+    roleClientesId: envText("DISCORD_ROLE_CLIENTES_ID"),
+    roleDevId: envText("DISCORD_ROLE_DEV_ID")
+  };
+}
+
+function getSavedDiscordConfig(db) {
+  const list = Array.isArray(db?.discordTemplates) ? db.discordTemplates : [];
+  const found = list.find((item) => item?.id === "__discord_config");
+  return found?.values && typeof found.values === "object" ? found.values : {};
+}
+
+function numericConfig(value) {
+  const text = String(value || "").trim();
+  return /^\d{8,}$/.test(text) ? text : "";
+}
+
+function getDiscordConfig(db = null) {
+  const env = discordEnvConfig();
+  const saved = getSavedDiscordConfig(db);
+  const merged = { ...env };
+  for (const key of ["clientId", "guildId", "salesChannelId", "panelChannelId", "logChannelId", "validationCategoryId", "staffRoleId", "verifyChannelId", "userRoleId", "roleAdmiroId", "roleParceiroId", "roleClientesId", "roleDevId"]) {
+    if (numericConfig(saved[key])) merged[key] = numericConfig(saved[key]);
+  }
+  if (!merged.panelChannelId) merged.panelChannelId = merged.salesChannelId;
   const validationTtlMinutes = Math.max(1, Math.min(30, Number.parseInt(process.env.DISCORD_VALIDATION_CHANNEL_TTL_MINUTES || "3", 10) || 3));
-  const token = String(process.env.DISCORD_BOT_TOKEN || "").trim();
-  const configured = Boolean(clientId && guildId && salesChannelId && logChannelId && token);
+  const token = envText("DISCORD_BOT_TOKEN");
+  const configured = Boolean(merged.clientId && merged.guildId && merged.salesChannelId && merged.logChannelId && token);
 
   return {
-    enabled,
+    ...merged,
+    enabled: env.enabled,
     configured,
-    clientId,
-    guildId,
-    salesChannelId,
-    panelChannelId,
-    logChannelId,
-    validationCategoryId,
-    staffRoleId,
-    verifyChannelId,
-    userRoleId,
-    roleAdmiroId,
-    roleParceiroId,
-    roleClientesId,
-    roleDevId,
     validationTtlMinutes,
     token,
-    tokenPresent: Boolean(token)
+    tokenPresent: Boolean(token),
+    usingSavedConfig: Boolean(Object.keys(saved || {}).length)
   };
 }
 
@@ -1507,24 +1545,58 @@ function getPublicDiscordStatus(config = getDiscordConfig()) {
     roleClientesId: config.roleClientesId || null,
     roleDevId: config.roleDevId || null,
     validationTtlMinutes: config.validationTtlMinutes || 3,
+    usingSavedConfig: Boolean(config.usingSavedConfig),
     mode: config.enabled ? "ready_to_connect" : "prepared_disabled",
     message: config.enabled
-      ? "Discord ativo. Comando /doar disponível quando o bot estiver conectado."
+      ? "Discord ativo. Bot pronto para painéis, verificação e doações."
       : "Discord preparado, mas desativado por DISCORD_ENABLED=false."
   };
 }
 
 app.get("/discord/status", auth, (req, res) => {
   if (!requireDiscordAdmin(req, res)) return;
-  const config = getDiscordConfig();
+  const config = getDiscordConfig(req.db);
   res.json({ ok: true, discord: getPublicDiscordStatus(config) });
+});
+
+app.put("/discord/config", auth, async (req, res, next) => {
+  try {
+    if (!requireDiscordAdmin(req, res)) return;
+    const body = req.body || {};
+    const values = {
+      clientId: numericConfig(body.clientId),
+      guildId: numericConfig(body.guildId),
+      salesChannelId: numericConfig(body.salesChannelId),
+      panelChannelId: numericConfig(body.panelChannelId) || numericConfig(body.salesChannelId),
+      logChannelId: numericConfig(body.logChannelId),
+      verifyChannelId: numericConfig(body.verifyChannelId),
+      userRoleId: numericConfig(body.userRoleId)
+    };
+    const invalid = Object.entries(body).filter(([key, value]) => value && ["clientId", "guildId", "salesChannelId", "panelChannelId", "logChannelId", "verifyChannelId", "userRoleId"].includes(key) && !numericConfig(value));
+    if (invalid.length) return res.status(400).json({ error: `IDs inválidos: ${invalid.map(([key]) => key).join(", ")}.` });
+    const configEntry = { id: "__discord_config", name: "Configuração Discord", values, updatedAt: nowIso(), updatedBy: req.user.username };
+    req.db.discordTemplates = [configEntry, ...(Array.isArray(req.db.discordTemplates) ? req.db.discordTemplates.filter((item) => item.id !== "__discord_config") : [])];
+    await writeDb(req.db);
+    const config = getDiscordConfig(req.db);
+    res.json({ ok: true, discord: getPublicDiscordStatus(config), config: values });
+  } catch (error) { next(error); }
+});
+
+app.post("/discord/config/restore", auth, async (req, res, next) => {
+  try {
+    if (!requireDiscordAdmin(req, res)) return;
+    req.db.discordTemplates = (Array.isArray(req.db.discordTemplates) ? req.db.discordTemplates : []).filter((item) => item.id !== "__discord_config");
+    await writeDb(req.db);
+    const config = getDiscordConfig(req.db);
+    res.json({ ok: true, discord: getPublicDiscordStatus(config), message: "Configuração restaurada do Render." });
+  } catch (error) { next(error); }
 });
 
 app.post("/discord/test", auth, async (req, res, next) => {
   try {
     if (!requireDiscordAdmin(req, res)) return;
 
-    const config = getDiscordConfig();
+    const config = getDiscordConfig(req.db);
     if (!config.tokenPresent) return res.status(400).json({ error: "Token do bot não configurado no Render." });
     if (!config.logChannelId) return res.status(400).json({ error: "Canal de logs do Discord não configurado." });
 
@@ -1598,7 +1670,7 @@ app.put("/discord/templates/:id", auth, async (req, res, next) => {
 app.post("/discord/templates/send-panel", auth, async (req, res, next) => {
   try {
     if (!requireDiscordAdmin(req, res)) return;
-    const config = getDiscordConfig();
+    const config = getDiscordConfig(req.db);
     if (!config.tokenPresent) return res.status(400).json({ error: "Token do bot não configurado." });
     const templateId = String(req.body?.templateId || "donation_panel");
     const channelId = String(req.body?.channelId || config.panelChannelId || config.salesChannelId || "").trim();
@@ -1618,7 +1690,7 @@ app.post("/discord/templates/send-panel", auth, async (req, res, next) => {
 app.post("/discord/templates/send-verify-panel", auth, async (req, res, next) => {
   try {
     if (!requireDiscordAdmin(req, res)) return;
-    const config = getDiscordConfig();
+    const config = getDiscordConfig(req.db);
     if (!config.tokenPresent) return res.status(400).json({ error: "Token do bot não configurado." });
     const channelId = String(req.body?.channelId || config.verifyChannelId || "").trim();
     if (!channelId) return res.status(400).json({ error: "Canal de verificação do Discord não configurado." });
@@ -1639,10 +1711,14 @@ app.get("/payments/status", auth, (req, res) => {
   res.json({ ok: true, payments: getPublicPaymentStatus() });
 });
 
-app.get("/discord/orders", auth, (req, res) => {
-  if (!requirePaymentsAdmin(req, res)) return;
-  const orders = Array.isArray(req.db.discordOrders) ? req.db.discordOrders : [];
-  res.json({ ok: true, orders: orders.slice(0, 100) });
+app.get("/discord/orders", auth, async (req, res, next) => {
+  try {
+    if (!requirePaymentsAdmin(req, res)) return;
+    const expired = cancelExpiredDonations(req.db, 5);
+    if (expired.changed) await writeDb(req.db);
+    const orders = Array.isArray(req.db.discordOrders) ? req.db.discordOrders : [];
+    res.json({ ok: true, orders: orders.slice(0, 100), expired: expired.count });
+  } catch (error) { next(error); }
 });
 
 app.post("/discord/orders", auth, async (req, res, next) => {
@@ -1665,7 +1741,7 @@ app.post("/payments/mercadopago/donation", auth, async (req, res, next) => {
     if (!config.configured) return res.status(400).json({ error: "Mercado Pago não configurado no Render." });
     if (!config.enabled) return res.status(400).json({ error: "Mercado Pago está em modo preparado. Altere MERCADOPAGO_ENABLED=true para criar link de doação." });
 
-    const order = createPreparedOrder({ ...(req.body || {}), provider: "mercadopago", currency: "BRL" }, req.user);
+    const order = createPreparedOrder({ ...(req.body || {}), provider: "mercadopago", currency: "BRL", source: "manual_console" }, req.user);
     if (!order.amount) return res.status(400).json({ error: "Informe um valor de doação válido." });
 
     order.status = "aguardando_doacao";
@@ -1807,7 +1883,8 @@ let discordBotStarted = false;
 let discordClient = null;
 
 async function startDiscordBot() {
-  const config = getDiscordConfig();
+  const configDb = await readDb().catch(() => null);
+  const config = getDiscordConfig(configDb);
   if (discordBotStarted || !config.enabled) return;
   discordBotStarted = true;
 
@@ -1919,23 +1996,29 @@ async function startDiscordBot() {
       await channel.send({ content: truncateDiscordText(lines.join("\n"), 1900), files });
     }
 
+    function memberHasDonationAccess(member, config) {
+      const allowed = [config.userRoleId, config.roleClientesId, config.roleParceiroId, config.roleAdmiroId, config.roleDevId].filter(Boolean);
+      if (!allowed.length) return true;
+      return allowed.some((roleId) => member?.roles?.cache?.has(roleId));
+    }
+
     try {
       if (interaction.isButton() && interaction.customId === "upsystem_verify_user") {
-        const config = getDiscordConfig();
+        const config = getDiscordConfig(await readDb().catch(() => null));
         if (!config.userRoleId) return interaction.reply({ content: "Cargo de verificação não configurado. Avise um administrador.", ephemeral: true });
         const member = interaction.member || await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
         if (!member) return interaction.reply({ content: "Não foi possível localizar seu membro no servidor.", ephemeral: true });
-        if (member.roles?.cache?.has(config.userRoleId)) return interaction.reply({ content: "Você já está verificado.", ephemeral: true });
+        if (memberHasDonationAccess(member, config)) return interaction.reply({ content: "Você já está verificado.", ephemeral: true });
         await member.roles.add(config.userRoleId, "UpSysteM verificação por botão");
         await sendDiscordChannelMessage(config.logChannelId, `✅ Usuário verificado: <@${interaction.user.id}> recebeu o cargo user.`).catch(() => null);
         return interaction.reply({ content: "Verificação concluída. Você já pode usar o botão Doar.", ephemeral: true });
       }
 
       if (interaction.isButton() && interaction.customId === "upsystem_donate_start") {
-        const config = getDiscordConfig();
+        const config = getDiscordConfig(await readDb().catch(() => null));
         if (config.userRoleId) {
           const member = interaction.member || await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
-          const verified = Boolean(member?.roles?.cache?.has(config.userRoleId));
+          const verified = memberHasDonationAccess(member, config);
           if (!verified) {
             const where = config.verifyChannelId ? ` Acesse <#${config.verifyChannelId}> e clique em Verificar.` : " Faça a verificação no canal indicado pelo servidor.";
             return interaction.reply({ content: `Você precisa se verificar antes de doar.${where}`, ephemeral: true });
@@ -1956,7 +2039,7 @@ async function startDiscordBot() {
       if (interaction.isStringSelectMenu() && interaction.customId === "upsystem_donation_plan") {
         await interaction.deferReply({ ephemeral: true });
         const plan = normalizeDonationPlan(interaction.values?.[0] || "monthly");
-        const config = getDiscordConfig();
+        const config = getDiscordConfig(await readDb().catch(() => null));
         const guild = interaction.guild;
         if (!guild) throw new Error("Servidor Discord não disponível para criar canal de validação.");
         const channelName = `validacao-${discordSafeName(interaction.user.username)}-${Date.now().toString().slice(-5)}`;
@@ -2037,7 +2120,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.0.13",
+    version: "1.0.14",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
