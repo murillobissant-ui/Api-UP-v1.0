@@ -206,6 +206,15 @@ async function ensureSchema() {
     )
   `);
 
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS upsystem_discord_templates (
+      id TEXT PRIMARY KEY,
+      data JSONB NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+
   await db.query(`
     CREATE INDEX IF NOT EXISTS idx_upsystem_logs_created_at
     ON upsystem_logs (created_at DESC)
@@ -229,6 +238,12 @@ async function ensureSchema() {
   await db.query(`
     CREATE INDEX IF NOT EXISTS idx_upsystem_discord_orders_status
     ON upsystem_discord_orders ((data->>'status'))
+  `);
+
+
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_upsystem_discord_templates_updated_at
+    ON upsystem_discord_templates (updated_at DESC)
   `);
 
   await ensureInitialData();
@@ -332,7 +347,7 @@ async function readDb() {
   await ensureSchema();
   const db = getPool();
 
-  const [users, keys, sites, logs, systemLogs, discordOrders] = await Promise.all([
+  const [users, keys, sites, logs, systemLogs, discordOrders, discordTemplates] = await Promise.all([
     db.query("SELECT data FROM upsystem_users ORDER BY updated_at ASC"),
     db.query("SELECT data FROM upsystem_activation_keys ORDER BY updated_at ASC"),
     db.query("SELECT data FROM upsystem_sites ORDER BY id ASC"),
@@ -350,7 +365,8 @@ async function readDb() {
        LIMIT $1`,
       [MAX_SYSTEM_LOGS, SYSTEM_LOG_RETENTION_DAYS]
     ),
-    db.query("SELECT data FROM upsystem_discord_orders ORDER BY created_at DESC LIMIT 100")
+    db.query("SELECT data FROM upsystem_discord_orders ORDER BY created_at DESC LIMIT 100"),
+    db.query("SELECT data FROM upsystem_discord_templates ORDER BY updated_at DESC LIMIT 50")
   ]);
 
   return {
@@ -359,7 +375,8 @@ async function readDb() {
     sites: sites.rows.map(rowData),
     logs: logs.rows.map(rowData).reverse(),
     systemLogs: systemLogs.rows.map(rowData).reverse(),
-    discordOrders: discordOrders.rows.map(rowData)
+    discordOrders: discordOrders.rows.map(rowData),
+    discordTemplates: discordTemplates.rows.map(rowData)
   };
 }
 
@@ -456,6 +473,17 @@ async function writeDb(state) {
          VALUES ($1, $2::jsonb, COALESCE($3::timestamptz, NOW()), NOW())
          ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
         [order.id, JSON.stringify(order), order.createdAt || null]
+      );
+    }
+
+
+    for (const template of state.discordTemplates || []) {
+      if (!template?.id) continue;
+      await client.query(
+        `INSERT INTO upsystem_discord_templates (id, data, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        [template.id, JSON.stringify(template)]
       );
     }
 
