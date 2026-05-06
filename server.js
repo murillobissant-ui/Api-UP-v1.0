@@ -318,7 +318,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.0.12");
+  res.setHeader("X-UpSystem-API", "1.0.13");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -354,7 +354,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.0.12", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.0.13", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -988,6 +988,16 @@ function defaultDiscordTemplates() {
       footer: "Após a confirmação do pagamento, a key é gerada automaticamente e vinculada ao seu ID do Discord."
     },
     {
+      id: "verification_panel",
+      name: "Boas-vindas / Verificação",
+      buttonLabel: "Verificar",
+      title: "Bem-vindo ao UpSysteM",
+      description: "Faça sua verificação para liberar as áreas do servidor e o botão Doar.",
+      body: "Clique no botão Verificar abaixo. O bot concederá o cargo user/verificado automaticamente.",
+      plansText: "Depois da verificação, você poderá acessar o painel de doação e receber sua key após confirmação.",
+      footer: "A verificação é necessária para proteger o fluxo de doação e entrega de keys."
+    },
+    {
       id: "payment_instructions",
       name: "Instruções de pagamento",
       buttonLabel: "Doar",
@@ -1439,7 +1449,13 @@ function getDiscordConfig() {
   const panelChannelId = String(process.env.DISCORD_DONATION_PANEL_CHANNEL_ID || process.env.DISCORD_SALES_CHANNEL_ID || "").trim();
   const logChannelId = String(process.env.DISCORD_LOG_CHANNEL_ID || "").trim();
   const validationCategoryId = String(process.env.DISCORD_VALIDATION_CATEGORY_ID || "").trim();
-  const staffRoleId = String(process.env.DISCORD_STAFF_ROLE_ID || "").trim();
+  const staffRoleId = String(process.env.DISCORD_STAFF_ROLE_ID || process.env.DISCORD_ROLE_ADMIRO_ID || "").trim();
+  const verifyChannelId = String(process.env.DISCORD_VERIFY_CHANNEL_ID || "").trim();
+  const userRoleId = String(process.env.DISCORD_ROLE_USER_ID || "").trim();
+  const roleAdmiroId = String(process.env.DISCORD_ROLE_ADMIRO_ID || "").trim();
+  const roleParceiroId = String(process.env.DISCORD_ROLE_PARCEIRO_ID || "").trim();
+  const roleClientesId = String(process.env.DISCORD_ROLE_CLIENTES_ID || "").trim();
+  const roleDevId = String(process.env.DISCORD_ROLE_DEV_ID || "").trim();
   const validationTtlMinutes = Math.max(1, Math.min(30, Number.parseInt(process.env.DISCORD_VALIDATION_CHANNEL_TTL_MINUTES || "3", 10) || 3));
   const token = String(process.env.DISCORD_BOT_TOKEN || "").trim();
   const configured = Boolean(clientId && guildId && salesChannelId && logChannelId && token);
@@ -1454,6 +1470,12 @@ function getDiscordConfig() {
     logChannelId,
     validationCategoryId,
     staffRoleId,
+    verifyChannelId,
+    userRoleId,
+    roleAdmiroId,
+    roleParceiroId,
+    roleClientesId,
+    roleDevId,
     validationTtlMinutes,
     token,
     tokenPresent: Boolean(token)
@@ -1476,6 +1498,14 @@ function getPublicDiscordStatus(config = getDiscordConfig()) {
     logChannelId: config.logChannelId || null,
     validationCategoryConfigured: Boolean(config.validationCategoryId),
     staffRoleConfigured: Boolean(config.staffRoleId),
+    verifyChannelConfigured: Boolean(config.verifyChannelId),
+    userRoleConfigured: Boolean(config.userRoleId),
+    verifyChannelId: config.verifyChannelId || null,
+    userRoleId: config.userRoleId || null,
+    roleAdmiroId: config.roleAdmiroId || null,
+    roleParceiroId: config.roleParceiroId || null,
+    roleClientesId: config.roleClientesId || null,
+    roleDevId: config.roleDevId || null,
     validationTtlMinutes: config.validationTtlMinutes || 3,
     mode: config.enabled ? "ready_to_connect" : "prepared_disabled",
     message: config.enabled
@@ -1582,6 +1612,25 @@ app.post("/discord/templates/send-panel", auth, async (req, res, next) => {
     const sent = await sendDiscordChannelPayload(channelId, payload);
     await sendDiscordChannelMessage(config.logChannelId, `📌 Painel de doação enviado no canal <#${channelId}> pelo Console.`).catch(() => null);
     res.json({ ok: true, message: "Painel enviado no canal configurado.", discordMessageId: sent.message?.id || null });
+  } catch (error) { next(error); }
+});
+
+app.post("/discord/templates/send-verify-panel", auth, async (req, res, next) => {
+  try {
+    if (!requireDiscordAdmin(req, res)) return;
+    const config = getDiscordConfig();
+    if (!config.tokenPresent) return res.status(400).json({ error: "Token do bot não configurado." });
+    const channelId = String(req.body?.channelId || config.verifyChannelId || "").trim();
+    if (!channelId) return res.status(400).json({ error: "Canal de verificação do Discord não configurado." });
+    const template = getDiscordTemplates(req.db).find((tpl) => tpl.id === "verification_panel") || getDiscordTemplates(req.db)[0];
+    const payload = templateToDiscordPayload(template);
+    payload.components = [{
+      type: 1,
+      components: [{ type: 2, style: 1, custom_id: "upsystem_verify_user", label: template.buttonLabel || "Verificar" }]
+    }];
+    const sent = await sendDiscordChannelPayload(channelId, payload);
+    await sendDiscordChannelMessage(config.logChannelId, `📌 Painel de verificação enviado no canal <#${channelId}> pelo Console.`).catch(() => null);
+    res.json({ ok: true, message: "Painel de verificação enviado no canal configurado.", discordMessageId: sent.message?.id || null });
   } catch (error) { next(error); }
 });
 
@@ -1871,7 +1920,27 @@ async function startDiscordBot() {
     }
 
     try {
+      if (interaction.isButton() && interaction.customId === "upsystem_verify_user") {
+        const config = getDiscordConfig();
+        if (!config.userRoleId) return interaction.reply({ content: "Cargo de verificação não configurado. Avise um administrador.", ephemeral: true });
+        const member = interaction.member || await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
+        if (!member) return interaction.reply({ content: "Não foi possível localizar seu membro no servidor.", ephemeral: true });
+        if (member.roles?.cache?.has(config.userRoleId)) return interaction.reply({ content: "Você já está verificado.", ephemeral: true });
+        await member.roles.add(config.userRoleId, "UpSysteM verificação por botão");
+        await sendDiscordChannelMessage(config.logChannelId, `✅ Usuário verificado: <@${interaction.user.id}> recebeu o cargo user.`).catch(() => null);
+        return interaction.reply({ content: "Verificação concluída. Você já pode usar o botão Doar.", ephemeral: true });
+      }
+
       if (interaction.isButton() && interaction.customId === "upsystem_donate_start") {
+        const config = getDiscordConfig();
+        if (config.userRoleId) {
+          const member = interaction.member || await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
+          const verified = Boolean(member?.roles?.cache?.has(config.userRoleId));
+          if (!verified) {
+            const where = config.verifyChannelId ? ` Acesse <#${config.verifyChannelId}> e clique em Verificar.` : " Faça a verificação no canal indicado pelo servidor.";
+            return interaction.reply({ content: `Você precisa se verificar antes de doar.${where}`, ephemeral: true });
+          }
+        }
         const row = new ActionRowBuilder().addComponents(
           new StringSelectMenuBuilder()
             .setCustomId("upsystem_donation_plan")
@@ -1968,7 +2037,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.0.12",
+    version: "1.0.13",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
