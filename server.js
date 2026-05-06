@@ -318,7 +318,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.0.3");
+  res.setHeader("X-UpSystem-API", "1.0.5");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -354,7 +354,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.0.3", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.0.5", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -813,38 +813,102 @@ app.get("/system-logs", auth, (req, res) => {
   res.json({ systemLogs: list.slice(-100) });
 });
 
-app.get("/discord/status", auth, (req, res) => {
+function requireDiscordAdmin(req, res) {
   if (!hasPermission(req.user, "discord_integration") || req.user.role !== "adm") {
-    return res.status(403).json({ error: "Apenas Admin pode acessar a integração Discord." });
+    res.status(403).json({ error: "Apenas Admin pode acessar a integração Discord." });
+    return false;
   }
+  return true;
+}
 
+function getDiscordConfig() {
   const enabled = String(process.env.DISCORD_ENABLED || "false").toLowerCase() === "true";
   const clientId = String(process.env.DISCORD_CLIENT_ID || "").trim();
   const guildId = String(process.env.DISCORD_GUILD_ID || "").trim();
   const salesChannelId = String(process.env.DISCORD_SALES_CHANNEL_ID || "").trim();
   const logChannelId = String(process.env.DISCORD_LOG_CHANNEL_ID || "").trim();
-  const tokenPresent = Boolean(String(process.env.DISCORD_BOT_TOKEN || "").trim());
+  const token = String(process.env.DISCORD_BOT_TOKEN || "").trim();
+  const configured = Boolean(clientId && guildId && salesChannelId && logChannelId && token);
 
-  res.json({
-    ok: true,
-    discord: {
-      enabled,
-      configured: Boolean(clientId && guildId && salesChannelId && logChannelId && tokenPresent),
-      clientIdConfigured: Boolean(clientId),
-      guildIdConfigured: Boolean(guildId),
-      salesChannelConfigured: Boolean(salesChannelId),
-      logChannelConfigured: Boolean(logChannelId),
-      tokenConfigured: tokenPresent,
-      clientId: clientId || null,
-      guildId: guildId || null,
-      salesChannelId: salesChannelId || null,
-      logChannelId: logChannelId || null,
-      mode: enabled ? "ready_to_connect" : "prepared_disabled",
-      message: enabled
-        ? "Discord configurado para futura ativação. Nenhum comando de venda foi iniciado nesta versão."
-        : "Discord preparado, mas desativado por DISCORD_ENABLED=false."
+  return {
+    enabled,
+    configured,
+    clientId,
+    guildId,
+    salesChannelId,
+    logChannelId,
+    token,
+    tokenPresent: Boolean(token)
+  };
+}
+
+function getPublicDiscordStatus(config = getDiscordConfig()) {
+  return {
+    enabled: config.enabled,
+    configured: config.configured,
+    clientIdConfigured: Boolean(config.clientId),
+    guildIdConfigured: Boolean(config.guildId),
+    salesChannelConfigured: Boolean(config.salesChannelId),
+    logChannelConfigured: Boolean(config.logChannelId),
+    tokenConfigured: config.tokenPresent,
+    clientId: config.clientId || null,
+    guildId: config.guildId || null,
+    salesChannelId: config.salesChannelId || null,
+    logChannelId: config.logChannelId || null,
+    mode: config.enabled ? "ready_to_connect" : "prepared_disabled",
+    message: config.enabled
+      ? "Discord configurado para futura ativação. Nenhum comando de venda foi iniciado nesta versão."
+      : "Discord preparado, mas desativado por DISCORD_ENABLED=false."
+  };
+}
+
+app.get("/discord/status", auth, (req, res) => {
+  if (!requireDiscordAdmin(req, res)) return;
+  const config = getDiscordConfig();
+  res.json({ ok: true, discord: getPublicDiscordStatus(config) });
+});
+
+app.post("/discord/test", auth, async (req, res, next) => {
+  try {
+    if (!requireDiscordAdmin(req, res)) return;
+
+    const config = getDiscordConfig();
+    if (!config.tokenPresent) return res.status(400).json({ error: "Token do bot não configurado no Render." });
+    if (!config.logChannelId) return res.status(400).json({ error: "Canal de logs do Discord não configurado." });
+
+    const content = `✅ UpSysteM Bot conectado com sucesso. Teste realizado pelo Console em ${new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}.`;
+    const response = await fetch(`https://discord.com/api/v10/channels/${encodeURIComponent(config.logChannelId)}/messages`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bot ${config.token}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ content })
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      const error = new Error(`Falha no teste Discord (${response.status}). ${body.slice(0, 300)}`);
+      error.status = response.status;
+      throw error;
     }
-  });
+
+    res.json({
+      ok: true,
+      message: "Mensagem de teste enviada no canal de logs do Discord.",
+      discord: getPublicDiscordStatus(config)
+    });
+  } catch (error) {
+    appendSystemLog({
+      level: "warning",
+      origin: "api.discord.test",
+      message: error.message || "Falha ao testar Discord.",
+      userId: req.user?.id || null,
+      username: req.user?.username || null,
+      context: { status: error.status || null }
+    }).catch(() => null);
+    next(error);
+  }
 });
 
 app.delete("/system-logs", auth, async (req, res, next) => {
@@ -863,7 +927,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.0.3",
+    version: "1.0.5",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
