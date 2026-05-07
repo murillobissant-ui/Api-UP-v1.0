@@ -358,7 +358,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "2.0.0");
+  res.setHeader("X-UpSystem-API", "2.0.1");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -394,7 +394,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "2.0.0", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "2.0.1", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -1073,7 +1073,7 @@ async function sendDiscordDm(userId, content) {
 
 
 function defaultDiscordTemplates() {
-  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "2.0.0";
+  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "2.0.1";
   return [
     { id: "donation_panel", name: "Painel de doação", buttonLabel: "Mercado Pago", title: "Painel de doação UpSysteM", description: "Escolha um plano de doação e abra sua sala de validação.", body: `🧩 Extensão UpSysteM
 {status}
@@ -1498,7 +1498,7 @@ function buildTicketRoomPayload(ticket) {
   };
 }
 
-function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "2.0.0"; }
+function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "2.0.1"; }
 
 function getExtensionRuntimeStatus(db = null) {
   const meta = db?.meta && typeof db.meta === "object" ? db.meta : {};
@@ -3547,7 +3547,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "2.0.0",
+    version: "2.0.1",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
