@@ -49,6 +49,34 @@ const LOG_RETENTION_MS = LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const DONATION_POLL_INTERVAL_MS = Math.max(5, Number.parseInt(process.env.UPSYSTEM_DONATION_POLL_INTERVAL_SECONDS || "10", 10) || 10) * 1000;
 const DONATION_POLL_TIMEOUT_MS = Math.max(1, Number.parseInt(process.env.UPSYSTEM_DONATION_POLL_TIMEOUT_MINUTES || "5", 10) || 5) * 60 * 1000;
 const activeDonationPolls = new Set();
+function donationPollKey(orderId, paymentId) {
+  const donationId = String(orderId || "").trim();
+  const id = String(paymentId || "").trim();
+  return donationId && id ? `${donationId}:${id}` : null;
+}
+function stopMercadoPagoDonationPolling(orderId, paymentId) {
+  const key = donationPollKey(orderId, paymentId);
+  if (!key) return false;
+  return activeDonationPolls.delete(key);
+}
+function isDonationCanceled(order) {
+  const status = String(order?.donationStatus || order?.status || "").toLowerCase();
+  return ["doacao_cancelada_usuario", "doacao_cancelada", "cancelado", "cancelada", "canceled", "cancelled"].includes(status);
+}
+async function cancelDiscordDonationOrder(db, order, reason = "Cancelada pelo usuário.") {
+  if (!order) return null;
+  stopMercadoPagoDonationPolling(order.id, order.paymentId || order.mercadoPagoPaymentId);
+  order.status = "doacao_cancelada_usuario";
+  order.donationStatus = "doacao_cancelada_usuario";
+  order.paymentStatus = order.paymentStatus || "user_cancelled";
+  order.cancelReason = reason;
+  order.canceledAt = nowIso();
+  order.updatedAt = nowIso();
+  order.keyGenerationBlocked = true;
+  upsertDiscordOrder(db, order);
+  await writeDb(db);
+  return order;
+}
 const verifyCaptchaChallenges = new Map();
 
 app.use(cors({ origin: CORS_ORIGIN === "*" ? true : CORS_ORIGIN, credentials: true }));
@@ -330,7 +358,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.1.16");
+  res.setHeader("X-UpSystem-API", "2.0.0");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -366,7 +394,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.1.16", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "2.0.0", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -1045,7 +1073,7 @@ async function sendDiscordDm(userId, content) {
 
 
 function defaultDiscordTemplates() {
-  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "1.1.16";
+  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "2.0.0";
   return [
     { id: "donation_panel", name: "Painel de doação", buttonLabel: "Mercado Pago", title: "Painel de doação UpSysteM", description: "Escolha um plano de doação e abra sua sala de validação.", body: `🧩 Extensão UpSysteM
 {status}
@@ -1343,7 +1371,8 @@ function donationActionButtons() {
     type: 1,
     components: [
       { type: 2, style: 3, custom_id: "upsystem_donation_link", label: "LINK DA DOAÇÃO" },
-      { type: 2, style: 3, custom_id: "upsystem_donation_pix", label: "PIX COPIA E COLA" }
+      { type: 2, style: 3, custom_id: "upsystem_donation_pix", label: "PIX COPIA E COLA" },
+      { type: 2, style: 4, custom_id: "upsystem_cancel_donation", label: "CANCELAR DOAÇÃO" }
     ]
   };
 }
@@ -1469,7 +1498,7 @@ function buildTicketRoomPayload(ticket) {
   };
 }
 
-function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.16"; }
+function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "2.0.0"; }
 
 function getExtensionRuntimeStatus(db = null) {
   const meta = db?.meta && typeof db.meta === "object" ? db.meta : {};
@@ -2309,6 +2338,11 @@ async function processMercadoPagoPaymentConfirmation(paymentId, source = "manual
     await logDiscordEvent(`⚠️ Mercado Pago consultado, mas nenhuma doação foi vinculada. payment_id: ${id} · status: ${payment.status || "desconhecido"}`).catch(() => null);
     return { ok: false, reason: "order_not_found", payment, externalReference };
   }
+  if (isDonationCanceled(order)) {
+    stopMercadoPagoDonationPolling(order.id, payment.id || id);
+    await logDiscordEvent(`🚫 Mercado Pago consultado, mas a doação já foi cancelada pelo usuário. Doação: ${order.id} · payment_id: ${id}`).catch(() => null);
+    return { ok: false, reason: "order_cancelled_by_user", order, payment, externalReference };
+  }
 
   order.paymentId = String(payment.id || id);
   order.mercadoPagoPaymentId = String(payment.id || id);
@@ -2361,15 +2395,23 @@ function startMercadoPagoDonationPolling(orderId, paymentId) {
   const id = String(paymentId || "").trim();
   const donationId = String(orderId || "").trim();
   if (!id || !donationId) return;
-  const key = `${donationId}:${id}`;
-  if (activeDonationPolls.has(key)) return;
+  const key = donationPollKey(donationId, id);
+  if (!key || activeDonationPolls.has(key)) return;
   activeDonationPolls.add(key);
   const startedAt = Date.now();
   let attempts = 0;
 
   const tick = async () => {
+    if (!activeDonationPolls.has(key)) return;
     attempts += 1;
     try {
+      const currentDb = await readDb().catch(() => null);
+      const currentOrder = currentDb ? ensureDiscordOrderArray(currentDb).find((item) => item.id === donationId || String(item.paymentId || "") === id) : null;
+      if (isDonationCanceled(currentOrder)) {
+        activeDonationPolls.delete(key);
+        await logDiscordEvent(`🚫 Polling Mercado Pago encerrado: doação cancelada pelo usuário. Doação: ${donationId} · payment_id: ${id}`).catch(() => null);
+        return;
+      }
       const result = await processMercadoPagoPaymentConfirmation(id, "polling_10s");
       if (result?.approved || result?.order?.keyCode) {
         activeDonationPolls.delete(key);
@@ -3180,18 +3222,17 @@ async function startDiscordBot() {
         await interaction.deferReply({ ephemeral: true });
         const db = await readDb();
         const order = findLatestDiscordOrderForChannel(db, interaction.channelId, interaction.user.id);
+        const cancelReason = order?.paymentId ? "Cancelada pelo usuário após a geração do QR Code." : "Cancelada pelo usuário antes da geração do QR Code.";
         if (order) {
-          order.status = "doacao_cancelada_usuario";
-          order.donationStatus = "doacao_cancelada_usuario";
-          order.cancelReason = "Cancelada pelo usuário antes da geração do QR Code.";
-          order.canceledAt = nowIso();
-          order.updatedAt = nowIso();
-          await writeDb(db);
+          await cancelDiscordDonationOrder(db, order, cancelReason);
+          if (order.qrMessageId && order.validationChannelId) {
+            await deleteDiscordMessage(order.validationChannelId, order.qrMessageId, `QR Code removido por cancelamento da doação ${order.id}`).catch(() => null);
+          }
         }
-        await logDiscordEvent(`🚫 Doação cancelada pelo usuário. Usuário: <@${interaction.user.id}> · Canal: <#${interaction.channelId}> · Doação: ${order?.id || "sem-registro"}`).catch(() => null);
-        await interaction.editReply({ content: "Doação cancelada. Esta sala será encerrada." }).catch(() => null);
+        await logDiscordEvent(`🚫 Doação cancelada pelo usuário. Usuário: <@${interaction.user.id}> · Canal: <#${interaction.channelId}> · Doação: ${order?.id || "sem-registro"} · Plano: ${order ? donationPlanLabel(order.plan) : "-"} · Valor: ${order ? formatDonationMoney(order.amount, order.currency || "BRL") : "-"} · payment_id: ${order?.paymentId || "-"}`).catch(() => null);
+        await interaction.editReply({ content: "Doação cancelada. O processo foi encerrado e nenhuma key será gerada." }).catch(() => null);
         const channel = interaction.channel;
-        setTimeout(() => channel?.delete("Doação UpSysteM cancelada pelo usuário").catch((error) => logDiscordEvent(`⚠️ Falha ao excluir sala cancelada <#${interaction.channelId}>: ${error.message || "sem detalhe"}`).catch(() => null)), 2500).unref?.();
+        setTimeout(() => channel?.delete("Doação UpSysteM cancelada pelo usuário").catch((error) => logDiscordEvent(`⚠️ Falha ao excluir sala cancelada <#${interaction.channelId}>: ${error.message || "sem detalhe"}`).catch(() => null)), 3500).unref?.();
         return;
       }
 
@@ -3506,7 +3547,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.1.16",
+    version: "2.0.0",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
