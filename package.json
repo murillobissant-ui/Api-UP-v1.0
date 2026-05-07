@@ -1,7 +1,7 @@
 {
   "name": "upsystem-api",
-  "version": "1.1.13",
-  "description": "API online para UpSysteM v1.1.13",
+  "version": "1.1.14",
+  "description": "API online para UpSysteM v1.1.14",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

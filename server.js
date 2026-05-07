@@ -330,7 +330,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.1.13");
+  res.setHeader("X-UpSystem-API", "1.1.14");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -366,7 +366,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.1.13", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.1.14", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -1045,7 +1045,7 @@ async function sendDiscordDm(userId, content) {
 
 
 function defaultDiscordTemplates() {
-  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "1.1.13";
+  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "1.1.14";
   return [
     { id: "donation_panel", name: "Painel de doação", buttonLabel: "Mercado Pago", title: "Painel de doação UpSysteM", description: "Escolha um plano de doação e abra sua sala de validação.", body: `🧩 Extensão UpSysteM
 {status}
@@ -1238,18 +1238,29 @@ function buildCaptchaPromptPayload(userId, code) {
     if (logoPath) files.push(new DiscordJS.AttachmentBuilder(logoPath, { name: DISCORD_LOGO_FILE }));
   }
   return {
+    content: `<@${userId}>`,
     embeds: [{
       author: { name: "UpSysteM", icon_url: `attachment://${DISCORD_LOGO_FILE}` },
       title: "Verificação anti-robô",
-      description: "Digite o código da imagem para receber o cargo de verificado. O desafio expira em 2 minutos.",
+      description: "Digite o código da imagem diretamente neste chat. Sua mensagem será apagada automaticamente após a validação. O desafio expira em 2 minutos.",
       color: 0x7c3aed,
       thumbnail: { url: `attachment://${DISCORD_LOGO_FILE}` },
       image: { url: buffer ? "attachment://upsystem-captcha.png" : undefined },
       footer: { text: "UpSysteM • Captcha interno" }
     }],
-    components: [{ type: 1, components: [{ type: 2, style: 1, custom_id: "upsystem_verify_captcha_answer", label: "RESPONDER CAPTCHA" }] }],
+    components: [],
     files
   };
+}
+
+async function deleteDiscordMessageSafe(channel, messageId, reason = "UpSysteM cleanup") {
+  try {
+    if (!channel || !messageId) return false;
+    const msg = await channel.messages.fetch(messageId).catch(() => null);
+    if (!msg) return false;
+    await msg.delete(reason).catch(() => null);
+    return true;
+  } catch (_) { return false; }
 }
 
 function buildPaymentMethodRow() {
@@ -1413,7 +1424,7 @@ function buildTicketRoomPayload(ticket) {
   };
 }
 
-function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.13"; }
+function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.14"; }
 
 function getExtensionRuntimeStatus(db = null) {
   const meta = db?.meta && typeof db.meta === "object" ? db.meta : {};
@@ -2851,7 +2862,16 @@ async function startDiscordBot() {
       .setDescription("Mostra orientação para usar o painel fixo de doação com Pix QR Code."),
     new SlashCommandBuilder()
       .setName("suporte-key")
-      .setDescription("Mostra orientação para abrir ticket de suporte de key.")
+      .setDescription("Mostra orientação para abrir ticket de suporte de key."),
+    new SlashCommandBuilder()
+      .setName("clear")
+      .setDescription("Limpa mensagens recentes do canal atual.")
+      .addIntegerOption((option) => option
+        .setName("quantidade")
+        .setDescription("Quantidade de mensagens para apagar. Use 999 para limpar o máximo possível.")
+        .setRequired(true)
+        .setMinValue(1)
+        .setMaxValue(999))
   ].map((command) => command.toJSON());
 
   const rest = new REST({ version: "10" }).setToken(config.token);
@@ -2922,6 +2942,45 @@ async function startDiscordBot() {
       return allowed.some((roleId) => member?.roles?.cache?.has(roleId));
     }
 
+    function memberHasDiscordAdminAccess(member, config) {
+      const allowed = [config.roleDevId, config.roleAdmiroId, config.staffRoleId].filter(Boolean);
+      const hasRole = allowed.some((roleId) => member?.roles?.cache?.has(roleId));
+      const hasManageMessages = member?.permissions?.has?.(PermissionFlagsBits.ManageMessages);
+      return Boolean(hasRole || hasManageMessages);
+    }
+
+    async function bulkClearChannelMessages(channel, amount) {
+      let remaining = Math.max(1, Math.min(999, Number.parseInt(amount, 10) || 1));
+      let deleted = 0;
+      let ignoredOld = 0;
+      const fourteenDaysMs = 14 * 24 * 60 * 60 * 1000;
+      while (remaining > 0) {
+        const fetchLimit = Math.min(100, remaining);
+        const messages = await channel.messages.fetch({ limit: fetchLimit }).catch(() => null);
+        if (!messages || messages.size === 0) break;
+        const fresh = messages.filter((msg) => Date.now() - msg.createdTimestamp < fourteenDaysMs);
+        ignoredOld += messages.size - fresh.size;
+        if (!fresh.size) break;
+        if (fresh.size === 1) {
+          await fresh.first().delete("UpSysteM /clear").catch(() => null);
+          deleted += 1;
+        } else {
+          const removed = await channel.bulkDelete(fresh, true).catch(async () => {
+            let manualDeleted = 0;
+            for (const msg of fresh.values()) {
+              const ok = await msg.delete("UpSysteM /clear").then(() => true).catch(() => false);
+              if (ok) manualDeleted += 1;
+            }
+            return { size: manualDeleted };
+          });
+          deleted += removed?.size || 0;
+        }
+        remaining -= messages.size;
+        if (messages.size < fetchLimit) break;
+      }
+      return { deleted, ignoredOld };
+    }
+
     try {
       if (interaction.isButton() && interaction.customId === "upsystem_verify_user") {
         const config = getDiscordConfig(await readDb().catch(() => null));
@@ -2933,46 +2992,19 @@ async function startDiscordBot() {
           return interaction.reply({ content: "Você já está verificado.", ephemeral: true });
         }
         const code = randomCaptchaCode(5);
-        verifyCaptchaChallenges.set(interaction.user.id, { code, guildId: interaction.guildId, createdAt: Date.now(), expiresAt: Date.now() + 2 * 60 * 1000, attempts: 0 });
         const payload = buildCaptchaPromptPayload(interaction.user.id, code);
+        const challengeMessage = await interaction.channel.send(payload);
+        const challenge = { code, guildId: interaction.guildId, channelId: interaction.channelId, promptMessageId: challengeMessage.id, createdAt: Date.now(), expiresAt: Date.now() + 2 * 60 * 1000, attempts: 0 };
+        verifyCaptchaChallenges.set(interaction.user.id, challenge);
+        setTimeout(async () => {
+          const current = verifyCaptchaChallenges.get(interaction.user.id);
+          if (!current || current.promptMessageId !== challengeMessage.id) return;
+          verifyCaptchaChallenges.delete(interaction.user.id);
+          await deleteDiscordMessageSafe(interaction.channel, challengeMessage.id, "Captcha UpSysteM expirado");
+          await logDiscordEvent(`⛔ Captcha expirado. Usuário: <@${interaction.user.id}>.`).catch(() => null);
+        }, 2 * 60 * 1000 + 1500).unref?.();
         await logDiscordEvent(`🛡️ Captcha anti-robô gerado. Usuário: <@${interaction.user.id}> · Expira em 2 minutos.`).catch(() => null);
-        return interaction.reply({ ...payload, ephemeral: true });
-      }
-
-      if (interaction.isButton() && interaction.customId === "upsystem_verify_captcha_answer") {
-        const challenge = verifyCaptchaChallenges.get(interaction.user.id);
-        if (!challenge || Date.now() > challenge.expiresAt) {
-          verifyCaptchaChallenges.delete(interaction.user.id);
-          await logDiscordEvent(`⛔ Captcha expirado. Usuário: <@${interaction.user.id}>.`).catch(() => null);
-          return interaction.reply({ content: "Seu captcha expirou. Clique novamente em VERIFICAR para gerar um novo desafio.", ephemeral: true });
-        }
-        const modal = new ModalBuilder().setCustomId("upsystem_verify_captcha_submit").setTitle("Verificação anti-robô");
-        const answerInput = new TextInputBuilder().setCustomId("captcha_answer").setLabel("Digite o código da imagem").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(8);
-        modal.addComponents(new ActionRowBuilder().addComponents(answerInput));
-        return interaction.showModal(modal);
-      }
-
-      if (interaction.isModalSubmit() && interaction.customId === "upsystem_verify_captcha_submit") {
-        const config = getDiscordConfig(await readDb().catch(() => null));
-        const challenge = verifyCaptchaChallenges.get(interaction.user.id);
-        if (!challenge || Date.now() > challenge.expiresAt) {
-          verifyCaptchaChallenges.delete(interaction.user.id);
-          await logDiscordEvent(`⛔ Captcha expirado. Usuário: <@${interaction.user.id}>.`).catch(() => null);
-          return interaction.reply({ content: "Captcha expirado. Clique novamente em VERIFICAR.", ephemeral: true });
-        }
-        const answer = String(interaction.fields.getTextInputValue("captcha_answer") || "").trim().toUpperCase().replace(/\s+/g, "");
-        challenge.attempts += 1;
-        if (answer !== challenge.code) {
-          if (challenge.attempts >= 3) verifyCaptchaChallenges.delete(interaction.user.id);
-          await logDiscordEvent(`⛔ Captcha falhou. Usuário: <@${interaction.user.id}> · Tentativa: ${challenge.attempts}/3.`).catch(() => null);
-          return interaction.reply({ content: challenge.attempts >= 3 ? "Captcha incorreto. Limite de tentativas atingido. Clique em VERIFICAR para gerar outro." : "Código incorreto. Tente novamente clicando em RESPONDER CAPTCHA.", ephemeral: true });
-        }
-        const member = interaction.member || await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
-        if (!member) return interaction.reply({ content: "Não foi possível localizar seu membro no servidor.", ephemeral: true });
-        await member.roles.add(config.userRoleId, "UpSysteM verificação por captcha aprovado");
-        verifyCaptchaChallenges.delete(interaction.user.id);
-        await logDiscordEvent(`✅ Captcha aprovado e usuário verificado: <@${interaction.user.id}> recebeu o cargo user.`).catch(() => null);
-        return interaction.reply({ content: "Verificação concluída. Você já pode usar o painel de doação.", ephemeral: true });
+        return interaction.reply({ content: "Captcha enviado. Digite o código diretamente neste canal. Sua mensagem será apagada automaticamente.", ephemeral: true });
       }
 
       if (interaction.isButton() && interaction.customId === "upsystem_paypal_soon") {
@@ -3253,6 +3285,21 @@ ${order.pixTicketUrl}`, ephemeral: true });
         return;
       }
 
+      if (interaction.isChatInputCommand() && interaction.commandName === "clear") {
+        await interaction.deferReply({ ephemeral: true });
+        const config = getDiscordConfig(await readDb().catch(() => null));
+        const member = await interaction.guild?.members.fetch(interaction.user.id).catch(() => null) || interaction.member;
+        if (!memberHasDiscordAdminAccess(member, config)) {
+          await logDiscordEvent(`⛔ /clear bloqueado. Usuário sem permissão: <@${interaction.user.id}> · Canal: <#${interaction.channelId}>`).catch(() => null);
+          return interaction.editReply({ content: "Você não tem permissão para usar este comando." });
+        }
+        if (!interaction.channel?.messages?.fetch) return interaction.editReply({ content: "Este canal não permite limpeza de mensagens." });
+        const amount = interaction.options.getInteger("quantidade", true);
+        const result = await bulkClearChannelMessages(interaction.channel, amount);
+        await logDiscordEvent(`🧹 /clear executado. Usuário: <@${interaction.user.id}> · Canal: <#${interaction.channelId}> · Solicitado: ${amount} · Apagadas: ${result.deleted} · Ignoradas antigas: ${result.ignoredOld}`).catch(() => null);
+        return interaction.editReply({ content: `Limpeza concluída. Mensagens apagadas: ${result.deleted}${result.ignoredOld ? ` · antigas ignoradas: ${result.ignoredOld}` : ""}.` });
+      }
+
       if (interaction.isChatInputCommand() && interaction.commandName === "doar") {
         await interaction.reply({ content: "Use o painel fixo no canal de doações, clique em **DOAR** e selecione **Semanal** ou **Mensal** para abrir a validação por Pix QR Code.", ephemeral: true });
         return;
@@ -3284,6 +3331,43 @@ ${order.pixTicketUrl}`, ephemeral: true });
       }
       if (interaction.deferred || interaction.replied) await interaction.editReply({ content, components: [] }).catch(() => null);
       else await interaction.reply({ content, ephemeral: true }).catch(() => null);
+    }
+  });
+
+  discordClient.on("messageCreate", async (message) => {
+    try {
+      if (!message.guild || message.author.bot) return;
+      const challenge = verifyCaptchaChallenges.get(message.author.id);
+      if (!challenge || challenge.guildId !== message.guild.id || challenge.channelId !== message.channel.id) return;
+      await message.delete().catch(() => null);
+      const answer = String(message.content || "").trim().toUpperCase().replace(/\s+/g, "");
+      const config = getDiscordConfig(await readDb().catch(() => null));
+      if (Date.now() > challenge.expiresAt) {
+        verifyCaptchaChallenges.delete(message.author.id);
+        await deleteDiscordMessageSafe(message.channel, challenge.promptMessageId, "Captcha UpSysteM expirado");
+        await logDiscordEvent(`⛔ Captcha expirado. Usuário: <@${message.author.id}>.`).catch(() => null);
+        return;
+      }
+      challenge.attempts += 1;
+      if (answer !== challenge.code) {
+        await logDiscordEvent(`⛔ Captcha falhou. Usuário: <@${message.author.id}> · Tentativa: ${challenge.attempts}/3.`).catch(() => null);
+        if (challenge.attempts >= 3) {
+          verifyCaptchaChallenges.delete(message.author.id);
+          await deleteDiscordMessageSafe(message.channel, challenge.promptMessageId, "Captcha UpSysteM falhou");
+        }
+        return;
+      }
+      const member = await message.guild.members.fetch(message.author.id).catch(() => null);
+      if (!member || !config.userRoleId) return;
+      await member.roles.add(config.userRoleId, "UpSysteM verificação por captcha aprovado no chat");
+      verifyCaptchaChallenges.delete(message.author.id);
+      await deleteDiscordMessageSafe(message.channel, challenge.promptMessageId, "Captcha UpSysteM aprovado");
+      const okMsg = await message.channel.send({ content: `✅ <@${message.author.id}> verificação concluída. Você já pode usar o painel de doação.` }).catch(() => null);
+      if (okMsg) setTimeout(() => okMsg.delete().catch(() => null), 8000).unref?.();
+      await logDiscordEvent(`✅ Captcha aprovado e usuário verificado: <@${message.author.id}> recebeu o cargo user.`).catch(() => null);
+    } catch (error) {
+      await appendSystemLog({ level: "warning", origin: "api.discord.captcha", message: error.message || "Falha no captcha por chat." }).catch(() => null);
+      await logDiscordEvent(`❌ Falha no captcha por chat. Erro: ${error.message || "sem detalhe"}`).catch(() => null);
     }
   });
 
@@ -3323,7 +3407,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.1.13",
+    version: "1.1.14",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
