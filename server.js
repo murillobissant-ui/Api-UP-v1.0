@@ -327,7 +327,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.1.9");
+  res.setHeader("X-UpSystem-API", "1.1.10");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -363,7 +363,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.1.9", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.1.10", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -1042,7 +1042,7 @@ async function sendDiscordDm(userId, content) {
 
 
 function defaultDiscordTemplates() {
-  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "1.1.9";
+  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "1.1.10";
   return [
     { id: "donation_panel", name: "Painel de doação", buttonLabel: "💠 DOAR", title: "Painel de doação UpSysteM", description: "Escolha um plano de doação e abra sua sala de validação.", body: `🧩 Extensão UpSysteM
 {status}
@@ -1054,7 +1054,7 @@ Sua contribuição ajuda o projeto e libera a key da extensão após a confirma�
     { id: "verification_panel", name: "Boas-vindas / Verificação", buttonLabel: "👍 VERIFICAR", title: "Verificação de conta!", description: "Olá! 👋", body: "Após a verificação, selecione o plano e tenha acesso!", plansText: "@everyone", footer: "Clique no botão VERIFICAR para receber o cargo user/verificado." },
     { id: "payment_instructions", name: "Instruções de doação", buttonLabel: "Doar", title: "Como funciona a doação", description: "A doação padrão é Pix via QR Code.", body: "Selecione o plano no menu. O bot criará uma sala temporária de validação da doação com botão para gerar o QR Code.", plansText: "Planos: Semanal ou Mensal.", footer: "Guarde sua key com segurança após a confirmação da doação." },
     { id: "extension_info", name: "Informações da extensão", buttonLabel: "Doar", title: "UpSysteM Extension", description: "Automação com controle de acesso por key.", body: "A key libera o uso da extensão conforme o plano escolhido. O acesso é pessoal e vinculado às regras do sistema.", plansText: "Planos de doação: Semanal e Mensal.", footer: "Suporte pelo servidor Discord." },
-    { id: "support_key", name: "Suporte/key", buttonLabel: "Doar", title: "Suporte de key", description: "Use este canal para orientações sobre ativação.", body: "Depois de receber sua key, informe-a na extensão para ativar o acesso. Se houver falha, procure o suporte.", plansText: "A key segue o plano escolhido na doação.", footer: "Não compartilhe sua key com terceiros." }
+    { id: "support_key", name: "Suporte Key / Ticket", buttonLabel: "🎫 ABRIR TICKET", title: "Suporte Key UpSysteM", description: "Abra um ticket para suporte relacionado à sua key da extensão.", body: "Nossa equipe irá analisar sua solicitação. Informe sua key, e-mail da doação e descreva o problema com clareza.", plansText: "Atendimento para ativação, renovação, erro de key e dúvidas de acesso.", footer: "Clique em ABRIR TICKET para criar uma sala privada de suporte." }
   ];
 }
 
@@ -1231,6 +1231,8 @@ function buildDonationThanksPayload(order) {
 }
 
 function donationPlanSelectRow() {
+  const weekly = formatDonationMoney(defaultDonationAmount("weekly"), "BRL");
+  const monthly = formatDonationMoney(defaultDonationAmount("monthly"), "BRL");
   return {
     type: 1,
     components: [{
@@ -1240,14 +1242,54 @@ function donationPlanSelectRow() {
       min_values: 1,
       max_values: 1,
       options: [
-        { label: "Semanal", value: "weekly", description: "Key de acesso semanal" },
-        { label: "Mensal", value: "monthly", description: "Key de acesso mensal" }
+        { label: `Semanal — ${weekly}`, value: "weekly", description: "Key de acesso semanal" },
+        { label: `Mensal — ${monthly}`, value: "monthly", description: "Key de acesso mensal" }
       ]
     }]
   };
 }
 
-function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.9"; }
+function buildSupportTicketPanelPayload(template = null) {
+  return {
+    embeds: [{
+      author: { name: "UpSysteM", icon_url: `attachment://${DISCORD_LOGO_FILE}` },
+      title: template?.title || "Suporte Key UpSysteM",
+      description: template?.description || "Abra um ticket para suporte relacionado à sua key da extensão.",
+      color: 0x7c3aed,
+      thumbnail: { url: `attachment://${DISCORD_LOGO_FILE}` },
+      image: { url: `attachment://${DISCORD_DONATION_BANNER_FILE}` },
+      fields: [
+        { name: "Como funciona", value: template?.body || "Clique no botão abaixo para criar uma sala privada de suporte.", inline: false },
+        { name: "Suporte", value: template?.plansText || "Ativação, renovação, erro de key e dúvidas de acesso.", inline: false }
+      ],
+      footer: { text: template?.footer || "UpSysteM • Suporte Key" }
+    }],
+    components: [{ type: 1, components: [{ type: 2, style: 1, custom_id: "upsystem_ticket_open", label: template?.buttonLabel || "🎫 ABRIR TICKET" }] }],
+    assetFiles: [DISCORD_LOGO_FILE, DISCORD_DONATION_BANNER_FILE]
+  };
+}
+
+function buildTicketRoomPayload(ticket) {
+  return {
+    embeds: [{
+      author: { name: "UpSysteM", icon_url: `attachment://${DISCORD_LOGO_FILE}` },
+      title: `🎫 Suporte Key #${ticket.number}`,
+      description: "Descreva o problema com sua key. Informe e-mail da doação, plano e prints quando necessário.",
+      color: 0x7c3aed,
+      thumbnail: { url: `attachment://${DISCORD_LOGO_FILE}` },
+      fields: [
+        { name: "Usuário", value: `<@${ticket.userId}>`, inline: true },
+        { name: "ID Discord", value: String(ticket.userId), inline: true },
+        { name: "Aberto em", value: formatDateTimeBR(ticket.createdAt), inline: false }
+      ],
+      footer: { text: "Apenas dev/admin pode fechar este ticket." }
+    }],
+    components: [{ type: 1, components: [{ type: 2, style: 4, custom_id: "upsystem_ticket_close", label: "FECHAR TICKET" }] }],
+    assetFiles: [DISCORD_LOGO_FILE]
+  };
+}
+
+function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.10"; }
 
 function getExtensionRuntimeStatus(db = null) {
   const meta = db?.meta && typeof db.meta === "object" ? db.meta : {};
@@ -2077,7 +2119,9 @@ function discordEnvConfig() {
     roleAdmiroId: envText("DISCORD_ROLE_ADMIRO_ID"),
     roleParceiroId: envText("DISCORD_ROLE_PARCEIRO_ID"),
     roleClientesId: envText("DISCORD_ROLE_CLIENTES_ID"),
-    roleDevId: envText("DISCORD_ROLE_DEV_ID")
+    roleDevId: envText("DISCORD_ROLE_DEV_ID"),
+    ticketCategoryId: envText("DISCORD_TICKET_CATEGORY_ID"),
+    ticketPanelChannelId: envText("DISCORD_TICKET_PANEL_CHANNEL_ID")
   };
 }
 
@@ -2096,7 +2140,7 @@ function getDiscordConfig(db = null) {
   const env = discordEnvConfig();
   const saved = getSavedDiscordConfig(db);
   const merged = { ...env };
-  for (const key of ["clientId", "guildId", "salesChannelId", "panelChannelId", "logChannelId", "validationCategoryId", "staffRoleId", "botRoleId", "verifyChannelId", "userRoleId", "roleAdmiroId", "roleParceiroId", "roleClientesId", "roleDevId"]) {
+  for (const key of ["clientId", "guildId", "salesChannelId", "panelChannelId", "logChannelId", "validationCategoryId", "staffRoleId", "botRoleId", "verifyChannelId", "userRoleId", "roleAdmiroId", "roleParceiroId", "roleClientesId", "roleDevId", "ticketCategoryId", "ticketPanelChannelId"]) {
     if (numericConfig(saved[key])) merged[key] = numericConfig(saved[key]);
   }
   if (!merged.panelChannelId) merged.panelChannelId = merged.salesChannelId;
@@ -2141,6 +2185,10 @@ function getPublicDiscordStatus(config = getDiscordConfig()) {
     roleParceiroId: config.roleParceiroId || null,
     roleClientesId: config.roleClientesId || null,
     roleDevId: config.roleDevId || null,
+    ticketCategoryId: config.ticketCategoryId || null,
+    ticketPanelChannelId: config.ticketPanelChannelId || null,
+    ticketCategoryConfigured: Boolean(config.ticketCategoryId),
+    ticketPanelChannelConfigured: Boolean(config.ticketPanelChannelId),
     validationTtlMinutes: config.validationTtlMinutes || 3,
     usingSavedConfig: Boolean(config.usingSavedConfig),
     mode: config.enabled ? "ready_to_connect" : "prepared_disabled",
@@ -2152,7 +2200,7 @@ function getPublicDiscordStatus(config = getDiscordConfig()) {
 
 function discordConfigPayload(req) {
   const body = req.body || {};
-  const allowed = ["clientId", "guildId", "salesChannelId", "panelChannelId", "logChannelId", "validationCategoryId", "staffRoleId", "botRoleId", "verifyChannelId", "userRoleId", "roleAdmiroId", "roleParceiroId", "roleClientesId", "roleDevId"];
+  const allowed = ["clientId", "guildId", "salesChannelId", "panelChannelId", "logChannelId", "validationCategoryId", "staffRoleId", "botRoleId", "verifyChannelId", "userRoleId", "roleAdmiroId", "roleParceiroId", "roleClientesId", "roleDevId", "ticketCategoryId", "ticketPanelChannelId"];
   const invalid = Object.entries(body).filter(([key, value]) => value && allowed.includes(key) && !numericConfig(value));
   if (invalid.length) {
     const err = new Error(`IDs inválidos: ${invalid.map(([key]) => key).join(", ")}.`);
@@ -2355,6 +2403,23 @@ app.post("/discord/templates/update-donation-panel", auth, async (req, res, next
   } catch (error) { next(error); }
 });
 
+
+app.post("/discord/templates/send-ticket-panel", auth, async (req, res, next) => {
+  try {
+    if (!requireDiscordAdmin(req, res)) return;
+    const config = getDiscordConfig(req.db);
+    if (!config.tokenPresent) return res.status(400).json({ error: "Token do bot não configurado." });
+    const channelId = String(req.body?.channelId || config.ticketPanelChannelId || config.panelChannelId || config.salesChannelId || "").trim();
+    if (!channelId) return res.status(400).json({ error: "Canal do painel de suporte não configurado." });
+    const template = getDiscordTemplates(req.db).find((tpl) => tpl.id === "support_key");
+    const sent = await sendDiscordChannelPayload(channelId, buildSupportTicketPanelPayload(template));
+    saveDiscordPanelMeta(req.db, "support_key", sent, channelId, "support_key", req.user);
+    await writeDb(req.db);
+    await logDiscordEvent(`📌 Painel de Suporte Key enviado no canal <#${channelId}> pelo Console. Message ID: ${sent.message?.id || "-"}`);
+    res.json({ ok: true, message: "Painel de Suporte Key enviado.", discordMessageId: sent.message?.id || null });
+  } catch (error) { next(error); }
+});
+
 app.get("/payments/status", auth, (req, res) => {
   if (!requirePaymentsAdmin(req, res)) return;
   res.json({ ok: true, payments: getPublicPaymentStatus() });
@@ -2542,7 +2607,10 @@ async function startDiscordBot() {
   const commands = [
     new SlashCommandBuilder()
       .setName("doar")
-      .setDescription("Mostra orientação para usar o painel fixo de doação com Pix QR Code.")
+      .setDescription("Mostra orientação para usar o painel fixo de doação com Pix QR Code."),
+    new SlashCommandBuilder()
+      .setName("suporte-key")
+      .setDescription("Mostra orientação para abrir ticket de suporte de key.")
   ].map((command) => command.toJSON());
 
   const rest = new REST({ version: "10" }).setToken(config.token);
@@ -2559,7 +2627,7 @@ async function startDiscordBot() {
     }).catch(() => null);
   }
 
-  discordClient = new Client({ intents: [GatewayIntentBits.Guilds] });
+  discordClient = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages] });
 
   discordClient.once("ready", () => {
     console.log(`Discord bot conectado como ${discordClient.user?.tag || "bot"}.`);
@@ -2623,9 +2691,29 @@ async function startDiscordBot() {
           await logDiscordEvent(`ℹ️ Usuário já verificado tentou verificar novamente: <@${interaction.user.id}>.`);
           return interaction.reply({ content: "Você já está verificado.", ephemeral: true });
         }
-        await member.roles.add(config.userRoleId, "UpSysteM verificação por botão");
-        await logDiscordEvent(`✅ Usuário verificado: <@${interaction.user.id}> recebeu o cargo user.`);
-        return interaction.reply({ content: "Verificação concluída. Você já pode usar o painel de doação.", ephemeral: true });
+        const a = Math.floor(Math.random() * 8) + 2;
+        const b = Math.floor(Math.random() * 8) + 2;
+        const modal = new ModalBuilder().setCustomId(`upsystem_verify_captcha:${a + b}`).setTitle("Verificação anti-robô");
+        const answerInput = new TextInputBuilder().setCustomId("captcha_answer").setLabel(`Quanto é ${a} + ${b}?`).setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(4);
+        modal.addComponents(new ActionRowBuilder().addComponents(answerInput));
+        await logDiscordEvent(`🛡️ Captcha de verificação gerado. Usuário: <@${interaction.user.id}>.`).catch(() => null);
+        return interaction.showModal(modal);
+      }
+
+      if (interaction.isModalSubmit() && String(interaction.customId || "").startsWith("upsystem_verify_captcha:")) {
+        await interaction.deferReply({ ephemeral: true });
+        const expected = Number(String(interaction.customId).split(":")[1]);
+        const answer = Number(String(interaction.fields.getTextInputValue("captcha_answer") || "").trim().replace(",", "."));
+        const config = getDiscordConfig(await readDb().catch(() => null));
+        const member = interaction.member || await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
+        if (!member || !config.userRoleId) return interaction.editReply({ content: "Não foi possível concluir a verificação. Avise um administrador." });
+        if (answer !== expected) {
+          await logDiscordEvent(`⛔ Captcha de verificação falhou. Usuário: <@${interaction.user.id}>.`).catch(() => null);
+          return interaction.editReply({ content: "Captcha incorreto. Clique em VERIFICAR e tente novamente." });
+        }
+        await member.roles.add(config.userRoleId, "UpSysteM verificação por captcha aprovado");
+        await logDiscordEvent(`✅ Captcha aprovado e usuário verificado: <@${interaction.user.id}> recebeu o cargo user.`).catch(() => null);
+        return interaction.editReply({ content: "Verificação concluída. Você já pode usar o painel de doação." });
       }
 
       if (interaction.isButton() && interaction.customId === "upsystem_donate_start") {
@@ -2644,7 +2732,7 @@ async function startDiscordBot() {
       }
 
       if (interaction.isStringSelectMenu() && interaction.customId === "upsystem_donation_plan") {
-        await interaction.deferReply({ ephemeral: true });
+        await interaction.deferUpdate();
         const plan = normalizeDonationPlan(interaction.values?.[0] || "monthly");
         const config = getDiscordConfig(await readDb().catch(() => null));
         await logDiscordEvent(`🛒 Seleção de plano recebida. Usuário: <@${interaction.user.id}> · Plano: ${donationPlanLabel(plan)} · Canal: <#${interaction.channelId}>`);
@@ -2701,7 +2789,7 @@ async function startDiscordBot() {
           order.validationPromptSentAt = nowIso();
           await writeDb(db);
         }
-        await interaction.editReply({ content: `Sala de validação criada: <#${validationChannel.id}>. Clique no botão **💠 GERAR DOAÇÃO** dentro da sala para informar seus dados e gerar o Pix.` });
+        await interaction.editReply({ content: `Plano selecionado. Sala de validação criada: <#${validationChannel.id}>.`, components: [] }).catch(() => null);
         await logDiscordEvent(`🟡 Nova sala de validação criada. Usuário: <@${interaction.user.id}> · Plano: ${donationPlanLabel(plan)} · Canal: <#${validationChannel.id}> · Status: aguardando_dados_doador`);
         return;
       }
@@ -2780,7 +2868,7 @@ ${order.pixTicketUrl}`, ephemeral: true });
             order.paymentUrl = transactionData.ticket_url || null;
           } else {
             order.paymentStatus = "test_pending";
-            order.pixQrCode = "PIX_TESTE_UPSYSTEM_V1_1_9_CONFIGURE_MERCADOPAGO_ACCESS_TOKEN";
+            order.pixQrCode = "PIX_TESTE_UPSYSTEM_V1_1_10_CONFIGURE_MERCADOPAGO_ACCESS_TOKEN";
             order.pixTicketUrl = null;
             order.paymentUrl = null;
             order.note = "Fluxo Discord testado sem Mercado Pago ativo. Configure Mercado Pago para Pix real e confirmação automática.";
@@ -2813,8 +2901,88 @@ ${order.pixTicketUrl}`, ephemeral: true });
         return interaction.editReply({ content: "Dados recebidos. O QR Code Pix foi enviado na sala de validação." });
       }
 
+      if (interaction.isButton() && interaction.customId === "upsystem_ticket_open") {
+        await interaction.deferReply({ ephemeral: true });
+        const db = await readDb();
+        const config = getDiscordConfig(db);
+        const guild = interaction.guild;
+        if (!guild) return interaction.editReply({ content: "Servidor Discord não disponível para criar ticket." });
+        const counter = Number(db.meta?.ticketCounter || 0) + 1;
+        db.meta = db.meta && typeof db.meta === "object" ? db.meta : {};
+        db.meta.ticketCounter = counter;
+        const number = String(counter).padStart(4, "0");
+        const channelName = `upsystem-${discordSafeName(interaction.user.username)}-${number}`;
+        const botMember = guild.members.me || await guild.members.fetchMe().catch(() => null);
+        const ticketAllow = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.EmbedLinks];
+        const overwrites = [{ id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] }];
+        if (botMember?.id) overwrites.push({ id: botMember.id, allow: ticketAllow });
+        if (config.botRoleId) overwrites.push({ id: config.botRoleId, allow: ticketAllow });
+        overwrites.push({ id: interaction.user.id, allow: ticketAllow });
+        [config.roleDevId, config.roleAdmiroId, config.staffRoleId].filter(Boolean).forEach((roleId) => overwrites.push({ id: roleId, allow: [...ticketAllow, PermissionFlagsBits.ManageChannels] }));
+        const ticketChannel = await guild.channels.create({
+          name: channelName,
+          type: ChannelType.GuildText,
+          parent: config.ticketCategoryId || null,
+          permissionOverwrites: overwrites,
+          topic: `UpSysteM suporte key #${number} · usuário ${interaction.user.id}`
+        });
+        const ticket = { id: makeId("ticket"), number, channelId: ticketChannel.id, channelName, userId: interaction.user.id, username: interaction.user.username, status: "open", createdAt: nowIso() };
+        db.meta.discordTickets = Array.isArray(db.meta.discordTickets) ? [ticket, ...db.meta.discordTickets].slice(0, 200) : [ticket];
+        await writeDb(db);
+        await sendDiscordChannelPayload(ticketChannel.id, buildTicketRoomPayload(ticket));
+        await logDiscordEvent(`🎫 Ticket aberto: #${number} · Usuário: <@${interaction.user.id}> · Canal: <#${ticketChannel.id}>`).catch(() => null);
+        return interaction.editReply({ content: `Ticket criado: <#${ticketChannel.id}>` });
+      }
+
+      if (interaction.isButton() && interaction.customId === "upsystem_ticket_close") {
+        await interaction.deferReply({ ephemeral: true });
+        const db = await readDb();
+        const config = getDiscordConfig(db);
+        const member = interaction.member || await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
+        const canClose = [config.roleDevId, config.roleAdmiroId, config.staffRoleId].filter(Boolean).some((roleId) => member?.roles?.cache?.has(roleId));
+        if (!canClose) return interaction.editReply({ content: "Apenas dev/admin pode fechar este ticket." });
+        const tickets = Array.isArray(db.meta?.discordTickets) ? db.meta.discordTickets : [];
+        const ticket = tickets.find((item) => item.channelId === interaction.channelId) || { number: "sem-registro", channelId: interaction.channelId, userId: null, username: "desconhecido", createdAt: nowIso() };
+        const channel = interaction.channel;
+        const fetched = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+        const messages = fetched ? Array.from(fetched.values()).sort((a,b) => a.createdTimestamp - b.createdTimestamp) : [];
+        const transcriptLines = [
+          `UpSysteM - Transcript Ticket #${ticket.number}`,
+          `Canal: ${channel?.name || interaction.channelId}`,
+          `Usuário: ${ticket.username || "-"} (${ticket.userId || "-"})`,
+          `Aberto em: ${ticket.createdAt || "-"}`,
+          `Fechado em: ${nowIso()}`,
+          `Fechado por: ${interaction.user.username} (${interaction.user.id})`,
+          "",
+          "--- Conversa ---",
+          ...messages.map((msg) => `[${new Date(msg.createdTimestamp).toISOString()}] ${msg.author?.tag || msg.author?.username || msg.author?.id}: ${String(msg.content || "[anexo/embed]").replace(/\n/g, " ")}`)
+        ];
+        const transcriptBuffer = Buffer.from(transcriptLines.join("\n"), "utf8");
+        const filename = `upsystem-ticket-${ticket.number}.txt`;
+        if (ticket.userId) {
+          const user = await interaction.client.users.fetch(ticket.userId).catch(() => null);
+          if (user) await user.send({ content: `🎫 Seu ticket UpSysteM #${ticket.number} foi fechado. Transcript em anexo.`, files: [new AttachmentBuilder(transcriptBuffer, { name: filename })] }).catch((error) => logDiscordEvent(`⚠️ Falha ao enviar transcript por DM. Ticket #${ticket.number} · Erro: ${error.message || "sem detalhe"}`).catch(() => null));
+        }
+        const logChannel = config.logChannelId ? await interaction.client.channels.fetch(config.logChannelId).catch(() => null) : null;
+        if (logChannel) await logChannel.send({ content: `🎫 Ticket fechado #${ticket.number}
+Usuário: ${ticket.userId ? `<@${ticket.userId}>` : "-"}
+Fechado por: <@${interaction.user.id}>`, files: [new AttachmentBuilder(transcriptBuffer, { name: filename })] }).catch(() => null);
+        ticket.status = "closed"; ticket.closedAt = nowIso(); ticket.closedBy = interaction.user.id;
+        db.meta.discordTickets = tickets.map((item) => item.channelId === interaction.channelId ? ticket : item);
+        await writeDb(db);
+        await interaction.editReply({ content: "Ticket fechado. Transcript registrado. A sala será excluída." }).catch(() => null);
+        await logDiscordEvent(`✅ Ticket fechado #${ticket.number}. Canal será excluído: ${interaction.channelId}`).catch(() => null);
+        setTimeout(() => channel.delete("Ticket UpSysteM fechado").catch(() => null), 3000).unref?.();
+        return;
+      }
+
       if (interaction.isChatInputCommand() && interaction.commandName === "doar") {
-        await interaction.reply({ content: "Use o painel fixo no canal de doações e selecione **Semanal** ou **Mensal** para abrir a validação por Pix QR Code.", ephemeral: true });
+        await interaction.reply({ content: "Use o painel fixo no canal de doações, clique em **DOAR** e selecione **Semanal** ou **Mensal** para abrir a validação por Pix QR Code.", ephemeral: true });
+        return;
+      }
+
+      if (interaction.isChatInputCommand() && interaction.commandName === "suporte-key") {
+        await interaction.reply({ content: "Use o painel **Suporte Key** e clique em **ABRIR TICKET** para criar uma sala privada de suporte.", ephemeral: true });
         return;
       }
     } catch (error) {
@@ -2878,7 +3046,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.1.9",
+    version: "1.1.10",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
