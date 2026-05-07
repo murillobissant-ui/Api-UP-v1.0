@@ -457,6 +457,49 @@ app.post("/auth/login", async (req, res, next) => {
 app.get("/me", auth, (req, res) => {
   res.json({ user: publicUser(req.user) });
 });
+app.get("/extension/settings", auth, (req, res) => {
+  const discord = getDiscordConfig(req.db);
+  const runtime = getExtensionRuntimeStatus(req.db);
+  res.json({
+    ok: true,
+    apiStatus: "online",
+    version: process.env.UPSYSTEM_PUBLIC_VERSION || process.env.APP_VERSION || "",
+    discordSupportUrl: discord.supportUrl || "",
+    supportDiscordUrl: discord.supportUrl || "",
+    extension: runtime
+  });
+});
+
+app.put("/me/profile", auth, async (req, res, next) => {
+  try {
+    const db = req.db;
+    const target = db.users.find((u) => u.id === req.user.id);
+    if (!target) return res.status(404).json({ error: "Usuário não encontrado." });
+    const firstName = String(req.body.firstName || "").trim().slice(0, 80);
+    const lastName = String(req.body.lastName || "").trim().slice(0, 80);
+    const email = String(req.body.email || "").trim().slice(0, 160);
+    const currentPassword = String(req.body.currentPassword || "");
+    const newPassword = String(req.body.newPassword || "");
+
+    target.firstName = firstName;
+    target.lastName = lastName;
+    target.name = [firstName, lastName].filter(Boolean).join(" ") || target.name || target.username;
+    target.email = email;
+
+    if (newPassword) {
+      if (newPassword.length < 4) return res.status(400).json({ error: "A nova senha deve ter pelo menos 4 caracteres." });
+      if (!currentPassword) return res.status(400).json({ error: "Informe a senha atual para alterar a senha." });
+      const ok = await bcrypt.compare(currentPassword, target.passwordHash);
+      if (!ok) return res.status(403).json({ error: "Senha atual incorreta." });
+      target.passwordHash = await bcrypt.hash(newPassword, 10);
+    }
+
+    target.updatedAt = nowIso();
+    await writeDb(db);
+    res.json({ ok: true, user: publicUser(target) });
+  } catch (error) { next(error); }
+});
+
 
 app.post("/auth/register-key", async (req, res, next) => {
   try {
@@ -2483,7 +2526,8 @@ function discordEnvConfig() {
     roleClientesId: envText("DISCORD_ROLE_CLIENTES_ID"),
     roleDevId: envText("DISCORD_ROLE_DEV_ID"),
     ticketCategoryId: envText("DISCORD_TICKET_CATEGORY_ID"),
-    ticketPanelChannelId: envText("DISCORD_TICKET_PANEL_CHANNEL_ID")
+    ticketPanelChannelId: envText("DISCORD_TICKET_PANEL_CHANNEL_ID"),
+    supportUrl: envText("DISCORD_SUPPORT_URL") || envText("DISCORD_INVITE_URL")
   };
 }
 
@@ -2505,6 +2549,7 @@ function getDiscordConfig(db = null) {
   for (const key of ["clientId", "guildId", "salesChannelId", "panelChannelId", "logChannelId", "ticketLogChannelId", "validationCategoryId", "staffRoleId", "botRoleId", "verifyChannelId", "userRoleId", "roleAdmiroId", "roleParceiroId", "roleClientesId", "roleDevId", "ticketCategoryId", "ticketPanelChannelId"]) {
     if (numericConfig(saved[key])) merged[key] = numericConfig(saved[key]);
   }
+  if (typeof saved.supportUrl === "string" && /^https?:\/\//i.test(saved.supportUrl.trim())) merged.supportUrl = saved.supportUrl.trim().slice(0, 500);
   if (!merged.panelChannelId) merged.panelChannelId = merged.salesChannelId;
   const validationTtlMinutes = Math.max(1, Math.min(30, Number.parseInt(process.env.DISCORD_VALIDATION_CHANNEL_TTL_MINUTES || "3", 10) || 3));
   const token = envText("DISCORD_BOT_TOKEN");
@@ -2551,6 +2596,7 @@ function getPublicDiscordStatus(config = getDiscordConfig()) {
     roleDevId: config.roleDevId || null,
     ticketCategoryId: config.ticketCategoryId || null,
     ticketPanelChannelId: config.ticketPanelChannelId || null,
+    supportUrl: config.supportUrl || null,
     ticketCategoryConfigured: Boolean(config.ticketCategoryId),
     ticketPanelChannelConfigured: Boolean(config.ticketPanelChannelId),
     validationTtlMinutes: config.validationTtlMinutes || 3,
@@ -2573,6 +2619,13 @@ function discordConfigPayload(req) {
   }
   const values = {};
   for (const key of allowed) values[key] = numericConfig(body[key]);
+  const supportUrl = String(body.supportUrl || "").trim();
+  if (supportUrl && !/^https?:\/\//i.test(supportUrl)) {
+    const err = new Error("Link do Discord/Suporte inválido. Use URL iniciada por http(s).");
+    err.status = 400;
+    throw err;
+  }
+  values.supportUrl = supportUrl.slice(0, 500);
   if (!values.panelChannelId) values.panelChannelId = values.salesChannelId;
   return values;
 }
