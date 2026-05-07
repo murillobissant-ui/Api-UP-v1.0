@@ -330,7 +330,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.1.15");
+  res.setHeader("X-UpSystem-API", "1.1.16");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -366,7 +366,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.1.15", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.1.16", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -1045,7 +1045,7 @@ async function sendDiscordDm(userId, content) {
 
 
 function defaultDiscordTemplates() {
-  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "1.1.15";
+  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "1.1.16";
   return [
     { id: "donation_panel", name: "Painel de doação", buttonLabel: "Mercado Pago", title: "Painel de doação UpSysteM", description: "Escolha um plano de doação e abra sua sala de validação.", body: `🧩 Extensão UpSysteM
 {status}
@@ -1053,7 +1053,7 @@ Versão pública: {version}
 
 Sua contribuição ajuda o projeto e libera a key da extensão após a confirmação da doação.`, plansText: `Planos de doação disponíveis:
 • Semanal
-• Mensal`, footer: "Clique em DOAR para selecionar o plano e criar sua sala de validação da doação." },
+• Mensal`, footer: "Clique em Mercado Pago para selecionar o plano e criar sua sala de validação da doação." },
     { id: "verification_panel", name: "Boas-vindas / Verificação", buttonLabel: "👍 VERIFICAR", title: "Verificação de conta!", description: "Olá! 👋", body: "Após a verificação, selecione o plano e tenha acesso!", plansText: "@everyone", footer: "Clique no botão VERIFICAR para receber o cargo user/verificado." },
     { id: "payment_instructions", name: "Instruções de doação", buttonLabel: "Doar", title: "Como funciona a doação", description: "A doação padrão é Pix via QR Code.", body: "Selecione o plano no menu. O bot criará uma sala temporária de validação da doação com botão para gerar o QR Code.", plansText: "Planos: Semanal ou Mensal.", footer: "Guarde sua key com segurança após a confirmação da doação." },
     { id: "extension_info", name: "Informações da extensão", buttonLabel: "Doar", title: "UpSysteM Extension", description: "Automação com controle de acesso por key.", body: "A key libera o uso da extensão conforme o plano escolhido. O acesso é pessoal e vinculado às regras do sistema.", plansText: "Planos de doação: Semanal e Mensal.", footer: "Suporte pelo servidor Discord." },
@@ -1075,6 +1075,7 @@ const DISCORD_ASSETS_DIR = path.join(__dirname, "assets", "discord");
 const DISCORD_LOGO_FILE = "upsystem-logo.png";
 const DISCORD_BANNER_FILE = "upsystem-banner-verificacao.png";
 const DISCORD_DONATION_BANNER_FILE = "upsystem-banner-doacao.png";
+const DISCORD_TICKET_BANNER_FILE = "upsystem-banner-ticket.png";
 
 function discordAssetPath(fileName) {
   const file = path.join(DISCORD_ASSETS_DIR, fileName);
@@ -1291,6 +1292,17 @@ async function sendTempInteractionReply(interaction, payload, seconds = 5) {
   return result;
 }
 
+async function editTempInteractionReply(interaction, payload, seconds = 5) {
+  const finalPayload = typeof payload === "string" ? { content: payload } : { ...(payload || {}) };
+  delete finalPayload.ephemeral;
+  const result = await interaction.editReply(finalPayload).catch(async () => {
+    if (!interaction.replied && !interaction.deferred) return interaction.reply({ ...finalPayload, ephemeral: true });
+    return null;
+  });
+  expireInteractionReply(interaction, seconds);
+  return result;
+}
+
 function captchaTtlMs() {
   const minutes = Number.parseInt(process.env.DISCORD_CAPTCHA_TTL_MINUTES || "2", 10) || 2;
   return Math.max(1, minutes) * 60 * 1000;
@@ -1425,7 +1437,7 @@ function buildSupportTicketPanelPayload(template = null) {
       description: template?.description || "Abra um ticket para suporte relacionado à sua key da extensão.",
       color: 0x7c3aed,
       thumbnail: { url: `attachment://${DISCORD_LOGO_FILE}` },
-      image: { url: `attachment://${DISCORD_DONATION_BANNER_FILE}` },
+      image: { url: `attachment://${DISCORD_TICKET_BANNER_FILE}` },
       fields: [
         { name: "Como funciona", value: template?.body || "Clique no botão abaixo para criar uma sala privada de suporte.", inline: false },
         { name: "Suporte", value: template?.plansText || "Ativação, renovação, erro de key e dúvidas de acesso.", inline: false }
@@ -1433,7 +1445,7 @@ function buildSupportTicketPanelPayload(template = null) {
       footer: { text: template?.footer || "UpSysteM • Suporte Key" }
     }],
     components: [{ type: 1, components: [{ type: 2, style: 1, custom_id: "upsystem_ticket_open", label: template?.buttonLabel || "🎫 ABRIR TICKET" }] }],
-    assetFiles: [DISCORD_LOGO_FILE, DISCORD_DONATION_BANNER_FILE]
+    assetFiles: [DISCORD_LOGO_FILE, DISCORD_TICKET_BANNER_FILE]
   };
 }
 
@@ -1457,7 +1469,7 @@ function buildTicketRoomPayload(ticket) {
   };
 }
 
-function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.15"; }
+function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.16"; }
 
 function getExtensionRuntimeStatus(db = null) {
   const meta = db?.meta && typeof db.meta === "object" ? db.meta : {};
@@ -1538,7 +1550,7 @@ function templateToDiscordPayload(template, options = {}) {
 Versão pública: v${runtime.version}`, inline: false },
           { name: "Planos de doação", value: plansText || `• Semanal
 • Mensal`, inline: false },
-          { name: "Importante", value: footer || "Clique em DOAR para selecionar seu plano.", inline: false }
+          { name: "Importante", value: footer || "Clique em Mercado Pago para selecionar seu plano.", inline: false }
         ],
         footer: { text: "UpSysteM • Painel de doação" }
       }],
@@ -1635,6 +1647,17 @@ async function sendDiscordDmPayload(userId, payload = {}) {
   } catch (error) {
     return { ok: false, status: error.status || null, reason: error.message || "Falha ao enviar DM." };
   }
+}
+
+async function assignDiscordRoleToUser(userId, roleId, reason = "UpSysteM role update", guildId = null) {
+  const config = getDiscordConfig();
+  const targetGuildId = guildId || config.guildId;
+  if (!config.tokenPresent || !targetGuildId || !userId || !roleId) return { ok: false, skipped: true, reason: "missing_config" };
+  const endpoint = `https://discord.com/api/v10/guilds/${encodeURIComponent(targetGuildId)}/members/${encodeURIComponent(userId)}/roles/${encodeURIComponent(roleId)}`;
+  const response = await fetch(endpoint, { method: "PUT", headers: { Authorization: `Bot ${config.token}`, "X-Audit-Log-Reason": encodeURIComponent(reason).slice(0, 512) } });
+  if (response.status === 204) return { ok: true };
+  const body = await response.json().catch(async () => ({ raw: await response.text().catch(() => "") }));
+  return { ok: false, status: response.status, reason: body?.message || body?.raw || "Falha ao aplicar cargo." };
 }
 
 async function deleteDiscordMessage(channelId, messageId, reason = "") {
@@ -1958,6 +1981,13 @@ async function finalizeApprovedDonation(db, order, payment = {}) {
       order.deliveredAt = nowIso();
       order.dmChannelId = delivery.channelId || null;
       order.dmMessageId = delivery.messageId || null;
+      const discordConfigForRole = getDiscordConfig();
+      if (discordConfigForRole.roleClientesId) {
+        const roleResult = await assignDiscordRoleToUser(order.discordUserId, discordConfigForRole.roleClientesId, `UpSysteM doação confirmada ${order.id}`, order.discordGuildId || discordConfigForRole.guildId).catch((error) => ({ ok: false, reason: error.message || "Falha ao conceder cargo Clientes." }));
+        order.clientesRoleAppliedAt = roleResult.ok ? nowIso() : null;
+        order.clientesRoleError = roleResult.ok ? null : (roleResult.reason || "Falha ao conceder cargo Clientes.");
+        await logDiscordEvent(roleResult.ok ? `👥 Cargo Clientes concedido. Usuário: <@${order.discordUserId}> · Doação: ${order.id}` : `⚠️ Falha ao conceder cargo Clientes. Usuário: <@${order.discordUserId}> · Doação: ${order.id} · Erro: ${order.clientesRoleError}`).catch(() => null);
+      }
       await sendDiscordChannelMessage(getDiscordConfig().logChannelId, `✅ Doação confirmada e key entregue por DM. Usuário: <@${order.discordUserId}> · Plano: ${donationPlanLabel(order.plan)} · Doação: ${order.id}`).catch(() => null);
       if (order.validationChannelId) {
         scheduleDiscordChannelDeletion(order.validationChannelId, validationDeleteAfterDmSeconds(), `DM enviada com sucesso para <@${order.discordUserId}>`);
@@ -1977,6 +2007,13 @@ async function finalizeApprovedDonation(db, order, payment = {}) {
         scheduleDiscordChannelDeletion(order.validationChannelId, validationDeleteAfterChannelKeySeconds(), `key entregue na sala temporária porque a DM falhou para <@${order.discordUserId}>`);
         order.validationChannelDeleteScheduledAt = nowIso();
         order.validationChannelDeleteDelaySeconds = validationDeleteAfterChannelKeySeconds();
+        const discordConfigForRoleFallback = getDiscordConfig();
+        if (discordConfigForRoleFallback.roleClientesId) {
+          const roleResult = await assignDiscordRoleToUser(order.discordUserId, discordConfigForRoleFallback.roleClientesId, `UpSysteM doação confirmada ${order.id}`, order.discordGuildId || discordConfigForRoleFallback.guildId).catch((error) => ({ ok: false, reason: error.message || "Falha ao conceder cargo Clientes." }));
+          order.clientesRoleAppliedAt = roleResult.ok ? nowIso() : null;
+          order.clientesRoleError = roleResult.ok ? null : (roleResult.reason || "Falha ao conceder cargo Clientes.");
+          await logDiscordEvent(roleResult.ok ? `👥 Cargo Clientes concedido. Usuário: <@${order.discordUserId}> · Doação: ${order.id}` : `⚠️ Falha ao conceder cargo Clientes. Usuário: <@${order.discordUserId}> · Doação: ${order.id} · Erro: ${order.clientesRoleError}`).catch(() => null);
+        }
         await logDiscordEvent(`⚠️ DM bloqueada/falhou. Key enviada na sala temporária. Usuário: <@${order.discordUserId}> · Canal: <#${order.validationChannelId}> · Sala será removida em 10 minutos.`).catch(() => null);
       } else {
         order.deliveryStatus = "falha_na_entrega";
@@ -3016,13 +3053,14 @@ async function startDiscordBot() {
 
     try {
       if (interaction.isButton() && interaction.customId === "upsystem_verify_user") {
+        await interaction.deferReply({ ephemeral: true }).catch(() => null);
         const config = getDiscordConfig(await readDb().catch(() => null));
-        if (!config.userRoleId) return sendTempInteractionReply(interaction, "Cargo de verificação não configurado. Avise um administrador.", ttlSeconds("short_error", 10));
+        if (!config.userRoleId) return editTempInteractionReply(interaction, "Cargo de verificação não configurado. Avise um administrador.", ttlSeconds("short_error", 10));
         const member = interaction.member || await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
-        if (!member) return sendTempInteractionReply(interaction, "Não foi possível localizar seu membro no servidor.", ttlSeconds("short_error", 10));
+        if (!member) return editTempInteractionReply(interaction, "Não foi possível localizar seu membro no servidor.", ttlSeconds("short_error", 10));
         if (memberHasDonationAccess(member, config)) {
           await logDiscordEvent(`ℹ️ Usuário já verificado tentou verificar novamente: <@${interaction.user.id}>.`);
-          return sendTempInteractionReply(interaction, "Você já está verificado.", ttlSeconds("short_success", 5));
+          return editTempInteractionReply(interaction, "Você já está verificado.", ttlSeconds("short_success", 5));
         }
         const previous = verifyCaptchaChallenges.get(interaction.user.id);
         if (previous?.promptChannelId && previous?.promptMessageId) {
@@ -3036,7 +3074,7 @@ async function startDiscordBot() {
           challengeMessage = await interaction.user.send(payload);
         } catch (dmError) {
           await logDiscordEvent(`⛔ Não consegui enviar captcha por DM. Usuário: <@${interaction.user.id}> · Erro: ${dmError.message || "DM bloqueada"}`).catch(() => null);
-          return sendTempInteractionReply(interaction, "Não consegui enviar sua verificação por DM. Abra suas mensagens privadas do servidor e clique em VERIFICAR novamente.", ttlSeconds("short_error", 15));
+          return editTempInteractionReply(interaction, "Não consegui enviar sua verificação por DM. Abra suas mensagens privadas do servidor e clique em VERIFICAR novamente.", ttlSeconds("short_error", 15));
         }
         const sessionId = `captcha_${interaction.user.id}_${Date.now()}`;
         const expiresAt = Date.now() + captchaTtlMs();
@@ -3051,7 +3089,7 @@ async function startDiscordBot() {
           await logDiscordEvent(`⛔ Captcha por DM expirado. Usuário: <@${interaction.user.id}> · Sessão: ${sessionId}.`).catch(() => null);
         }, captchaTtlMs() + 1500).unref?.();
         await logDiscordEvent(`🛡️ Captcha anti-robô enviado por DM. Usuário: <@${interaction.user.id}> · Sessão: ${sessionId}.`).catch(() => null);
-        return sendTempInteractionReply(interaction, "Enviei sua verificação por DM. Responda o código lá para receber o cargo user/verificado.", ttlSeconds("captcha_success", 5));
+        return editTempInteractionReply(interaction, "Enviei sua verificação por DM. Responda o código lá para receber o cargo user/verificado.", ttlSeconds("captcha_success", 5));
       }
 
       if (interaction.isButton() && interaction.customId === "upsystem_paypal_soon") {
@@ -3468,7 +3506,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.1.15",
+    version: "1.1.16",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
