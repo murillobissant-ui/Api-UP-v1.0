@@ -7,8 +7,10 @@ const fs = require("fs");
 const path = require("path");
 let QRCode = null;
 let PNG = null;
+let DiscordJS = null;
 try { QRCode = require("qrcode"); } catch (_) {}
 try { PNG = require("pngjs").PNG; } catch (_) {}
+try { DiscordJS = require("discord.js"); } catch (_) {}
 const {
   readDb,
   writeDb,
@@ -47,6 +49,7 @@ const LOG_RETENTION_MS = LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const DONATION_POLL_INTERVAL_MS = Math.max(5, Number.parseInt(process.env.UPSYSTEM_DONATION_POLL_INTERVAL_SECONDS || "10", 10) || 10) * 1000;
 const DONATION_POLL_TIMEOUT_MS = Math.max(1, Number.parseInt(process.env.UPSYSTEM_DONATION_POLL_TIMEOUT_MINUTES || "5", 10) || 5) * 60 * 1000;
 const activeDonationPolls = new Set();
+const verifyCaptchaChallenges = new Map();
 
 app.use(cors({ origin: CORS_ORIGIN === "*" ? true : CORS_ORIGIN, credentials: true }));
 app.use(express.json({ limit: "1mb" }));
@@ -327,7 +330,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.1.12");
+  res.setHeader("X-UpSystem-API", "1.1.13");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -363,7 +366,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.1.12", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.1.13", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -1042,9 +1045,9 @@ async function sendDiscordDm(userId, content) {
 
 
 function defaultDiscordTemplates() {
-  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "1.1.12";
+  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "1.1.13";
   return [
-    { id: "donation_panel", name: "Painel de doação", buttonLabel: "💠 DOAR", title: "Painel de doação UpSysteM", description: "Escolha um plano de doação e abra sua sala de validação.", body: `🧩 Extensão UpSysteM
+    { id: "donation_panel", name: "Painel de doação", buttonLabel: "Mercado Pago", title: "Painel de doação UpSysteM", description: "Escolha um plano de doação e abra sua sala de validação.", body: `🧩 Extensão UpSysteM
 {status}
 Versão pública: {version}
 
@@ -1136,6 +1139,127 @@ async function buildBrandedPixQrBuffer(pixCode) {
     }
   }
   return PNG.sync.write(qr);
+}
+
+
+const CAPTCHA_FONT = {
+  A: ["01110","10001","10001","11111","10001","10001","10001"],
+  B: ["11110","10001","10001","11110","10001","10001","11110"],
+  C: ["01111","10000","10000","10000","10000","10000","01111"],
+  D: ["11110","10001","10001","10001","10001","10001","11110"],
+  E: ["11111","10000","10000","11110","10000","10000","11111"],
+  F: ["11111","10000","10000","11110","10000","10000","10000"],
+  G: ["01111","10000","10000","10111","10001","10001","01110"],
+  H: ["10001","10001","10001","11111","10001","10001","10001"],
+  J: ["00111","00010","00010","00010","10010","10010","01100"],
+  K: ["10001","10010","10100","11000","10100","10010","10001"],
+  M: ["10001","11011","10101","10101","10001","10001","10001"],
+  N: ["10001","11001","10101","10011","10001","10001","10001"],
+  P: ["11110","10001","10001","11110","10000","10000","10000"],
+  Q: ["01110","10001","10001","10001","10101","10010","01101"],
+  R: ["11110","10001","10001","11110","10100","10010","10001"],
+  T: ["11111","00100","00100","00100","00100","00100","00100"],
+  U: ["10001","10001","10001","10001","10001","10001","01110"],
+  W: ["10001","10001","10001","10101","10101","10101","01010"],
+  X: ["10001","10001","01010","00100","01010","10001","10001"],
+  Y: ["10001","10001","01010","00100","00100","00100","00100"],
+  Z: ["11111","00001","00010","00100","01000","10000","11111"],
+  2: ["01110","10001","00001","00010","00100","01000","11111"],
+  3: ["11110","00001","00001","01110","00001","00001","11110"],
+  4: ["00010","00110","01010","10010","11111","00010","00010"],
+  5: ["11111","10000","10000","11110","00001","00001","11110"],
+  6: ["01110","10000","10000","11110","10001","10001","01110"],
+  7: ["11111","00001","00010","00100","01000","01000","01000"],
+  8: ["01110","10001","10001","01110","10001","10001","01110"],
+  9: ["01110","10001","10001","01111","00001","00001","01110"]
+};
+
+function randomCaptchaCode(length = 5) {
+  const chars = "ABCDEFGHJKMNPQRTUVWXYZ23456789";
+  let out = "";
+  for (let i = 0; i < length; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
+}
+
+function buildCaptchaPngBuffer(code) {
+  if (!PNG) return null;
+  const width = 360, height = 130;
+  const png = new PNG({ width, height });
+  for (let i = 0; i < png.data.length; i += 4) {
+    png.data[i] = 12; png.data[i + 1] = 16; png.data[i + 2] = 32; png.data[i + 3] = 255;
+  }
+  for (let i = 0; i < 900; i++) {
+    const x = Math.floor(Math.random() * width), y = Math.floor(Math.random() * height);
+    const idx = (y * width + x) << 2;
+    png.data[idx] = 50 + Math.floor(Math.random() * 120);
+    png.data[idx + 1] = 70 + Math.floor(Math.random() * 140);
+    png.data[idx + 2] = 170 + Math.floor(Math.random() * 80);
+    png.data[idx + 3] = 180;
+  }
+  const scale = 9;
+  const startX = 35;
+  const startY = 33;
+  const gap = 13;
+  const drawBlock = (x, y, r, g, b) => {
+    for (let yy = 0; yy < scale; yy++) for (let xx = 0; xx < scale; xx++) {
+      const px = x + xx, py = y + yy;
+      if (px < 0 || py < 0 || px >= width || py >= height) continue;
+      const idx = (py * width + px) << 2;
+      png.data[idx] = r; png.data[idx + 1] = g; png.data[idx + 2] = b; png.data[idx + 3] = 255;
+    }
+  };
+  String(code).split("").forEach((ch, ci) => {
+    const glyph = CAPTCHA_FONT[ch] || CAPTCHA_FONT["X"];
+    const ox = startX + ci * (5 * scale + gap) + Math.floor((Math.random() - 0.5) * 8);
+    const oy = startY + Math.floor((Math.random() - 0.5) * 12);
+    const color = ci % 2 ? [190, 95, 255] : [80, 185, 255];
+    glyph.forEach((row, gy) => row.split("").forEach((bit, gx) => {
+      if (bit === "1") drawBlock(ox + gx * scale, oy + gy * scale, ...color);
+    }));
+  });
+  // Neon horizontal lines/noise
+  for (let y = 22; y < height; y += 31) {
+    for (let x = 10; x < width - 10; x++) {
+      if (Math.random() < 0.72) {
+        const idx = (y * width + x) << 2;
+        png.data[idx] = 120; png.data[idx + 1] = 55; png.data[idx + 2] = 255; png.data[idx + 3] = 180;
+      }
+    }
+  }
+  return PNG.sync.write(png);
+}
+
+function buildCaptchaPromptPayload(userId, code) {
+  const buffer = buildCaptchaPngBuffer(code);
+  const logoPath = discordAssetPath(DISCORD_LOGO_FILE);
+  const files = [];
+  if (DiscordJS?.AttachmentBuilder) {
+    if (buffer) files.push(new DiscordJS.AttachmentBuilder(buffer, { name: "upsystem-captcha.png" }));
+    if (logoPath) files.push(new DiscordJS.AttachmentBuilder(logoPath, { name: DISCORD_LOGO_FILE }));
+  }
+  return {
+    embeds: [{
+      author: { name: "UpSysteM", icon_url: `attachment://${DISCORD_LOGO_FILE}` },
+      title: "Verificação anti-robô",
+      description: "Digite o código da imagem para receber o cargo de verificado. O desafio expira em 2 minutos.",
+      color: 0x7c3aed,
+      thumbnail: { url: `attachment://${DISCORD_LOGO_FILE}` },
+      image: { url: buffer ? "attachment://upsystem-captcha.png" : undefined },
+      footer: { text: "UpSysteM • Captcha interno" }
+    }],
+    components: [{ type: 1, components: [{ type: 2, style: 1, custom_id: "upsystem_verify_captcha_answer", label: "RESPONDER CAPTCHA" }] }],
+    files
+  };
+}
+
+function buildPaymentMethodRow() {
+  return {
+    type: 1,
+    components: [
+      { type: 2, style: 3, custom_id: "upsystem_donate_start", label: "Mercado Pago" },
+      { type: 2, style: 1, custom_id: "upsystem_paypal_soon", label: "PayPal" }
+    ]
+  };
 }
 
 function buildDonationGeneratedEmbed(order) {
@@ -1289,7 +1413,7 @@ function buildTicketRoomPayload(ticket) {
   };
 }
 
-function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.12"; }
+function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.13"; }
 
 function getExtensionRuntimeStatus(db = null) {
   const meta = db?.meta && typeof db.meta === "object" ? db.meta : {};
@@ -1543,6 +1667,87 @@ async function logDiscordEvent(message, embeds = []) {
     try { return await sendDiscordChannelMessage(config.logChannelId, truncateDiscordText(message, 1800)); }
     catch (_) { await appendSystemLog({ level: "warning", origin: "api.discord.log", message: error.message || "Falha ao enviar log Discord.", context: { logChannelId: config.logChannelId, status: error.status || null } }).catch(() => null); return { ok: false, error: error.message }; }
   }
+}
+
+async function logDiscordTicketEvent(message, embeds = [], files = []) {
+  const config = getDiscordConfig();
+  const channelId = config.ticketLogChannelId || config.logChannelId;
+  if (!channelId) return { ok: false, skipped: true, reason: "missing_ticket_log_channel" };
+  const finalEmbeds = Array.isArray(embeds) && embeds.length ? embeds : [buildDiscordLogEmbed(`🎫 ${message}`)];
+  try {
+    if (discordClient && files.length) {
+      const channel = await discordClient.channels.fetch(channelId).catch(() => null);
+      if (channel?.send) return await channel.send({ embeds: finalEmbeds, files });
+    }
+    return await sendDiscordChannelPayload(channelId, { content: "", embeds: finalEmbeds, assetFiles: [DISCORD_LOGO_FILE] });
+  } catch (error) {
+    await appendSystemLog({ level: "warning", origin: "api.discord.ticket.log", message: error.message || "Falha ao enviar log de ticket.", context: { channelId, status: error.status || null } }).catch(() => null);
+    return { ok: false, error: error.message };
+  }
+}
+
+function buildTicketClosedEmbed(ticket, interaction, channel) {
+  return {
+    author: { name: "UpSysteM Logs", icon_url: `attachment://${DISCORD_LOGO_FILE}` },
+    title: `🎫 Ticket encerrado #${ticket.number}`,
+    color: 0x3b82f6,
+    thumbnail: { url: `attachment://${DISCORD_LOGO_FILE}` },
+    fields: [
+      { name: "Usuário", value: ticket.userId ? `<@${ticket.userId}>` : (ticket.username || "-"), inline: true },
+      { name: "ID Discord", value: String(ticket.userId || "-"), inline: true },
+      { name: "Canal", value: channel?.name || String(ticket.channelId || "-"), inline: false },
+      { name: "Aberto em", value: formatDateTimeBR(ticket.createdAt), inline: true },
+      { name: "Fechado em", value: formatDateTimeBR(ticket.closedAt || nowIso()), inline: true },
+      { name: "Fechado por", value: `<@${interaction.user.id}>`, inline: false },
+      { name: "Status", value: "Transcript TXT anexado.", inline: false }
+    ],
+    footer: { text: "UpSysteM • Logs de Ticket" }
+  };
+}
+
+function buildTicketDmClosedEmbed(ticket) {
+  return {
+    author: { name: "UpSysteM", icon_url: `attachment://${DISCORD_LOGO_FILE}` },
+    title: `🎫 Ticket encerrado #${ticket.number}`,
+    description: "Seu atendimento de Suporte Key foi encerrado. O arquivo TXT com a conversa está anexado nesta mensagem.",
+    color: 0x7c3aed,
+    thumbnail: { url: `attachment://${DISCORD_LOGO_FILE}` },
+    fields: [
+      { name: "Ticket", value: `#${ticket.number}`, inline: true },
+      { name: "Aberto em", value: formatDateTimeBR(ticket.createdAt), inline: true },
+      { name: "Fechado em", value: formatDateTimeBR(ticket.closedAt || nowIso()), inline: false }
+    ],
+    footer: { text: "UpSysteM • Suporte Key" }
+  };
+}
+
+function buildTicketTranscriptText(ticket, interaction, channel, messages) {
+  const lines = [
+    `UpSysteM — Transcript Ticket #${ticket.number}`,
+    "",
+    `Canal: ${channel?.name || ticket.channelId || "-"}`,
+    `Usuário: ${ticket.username || "-"} (${ticket.userId || "-"})`,
+    `Aberto em: ${formatDateTimeBR(ticket.createdAt)}`,
+    `Fechado em: ${formatDateTimeBR(ticket.closedAt || nowIso())}`,
+    `Fechado por: ${interaction.user.username} (${interaction.user.id})`,
+    "",
+    "==================================================",
+    "CONVERSA",
+    "==================================================",
+    ""
+  ];
+  for (const msg of messages) {
+    const author = msg.author?.tag || msg.author?.username || msg.author?.id || "desconhecido";
+    const when = formatDateTimeBR(msg.createdTimestamp || msg.createdAt || nowIso());
+    const content = String(msg.content || "").trim();
+    const attachmentInfo = msg.attachments?.size ? ` [${msg.attachments.size} anexo(s)]` : "";
+    const embedInfo = msg.embeds?.length ? ` [${msg.embeds.length} embed(s)]` : "";
+    lines.push(`[${when}] ${author}:`);
+    lines.push(content || `[sem texto]${attachmentInfo}${embedInfo}`);
+    if (attachmentInfo || embedInfo) lines.push(`${attachmentInfo}${embedInfo}`.trim());
+    lines.push("");
+  }
+  return "\uFEFF" + lines.join("\n");
 }
 
 function discordSafeName(value) {
@@ -2144,6 +2349,7 @@ function discordEnvConfig() {
     salesChannelId: envText("DISCORD_SALES_CHANNEL_ID"),
     panelChannelId: envText("DISCORD_DONATION_PANEL_CHANNEL_ID") || envText("DISCORD_SALES_CHANNEL_ID"),
     logChannelId: envText("DISCORD_LOG_CHANNEL_ID"),
+    ticketLogChannelId: envText("DISCORD_TICKET_LOG_CHANNEL_ID"),
     validationCategoryId: envText("DISCORD_VALIDATION_CATEGORY_ID"),
     staffRoleId: envText("DISCORD_STAFF_ROLE_ID") || envText("DISCORD_ROLE_ADMIRO_ID"),
     botRoleId: envText("DISCORD_BOT_ROLE_ID"),
@@ -2173,7 +2379,7 @@ function getDiscordConfig(db = null) {
   const env = discordEnvConfig();
   const saved = getSavedDiscordConfig(db);
   const merged = { ...env };
-  for (const key of ["clientId", "guildId", "salesChannelId", "panelChannelId", "logChannelId", "validationCategoryId", "staffRoleId", "botRoleId", "verifyChannelId", "userRoleId", "roleAdmiroId", "roleParceiroId", "roleClientesId", "roleDevId", "ticketCategoryId", "ticketPanelChannelId"]) {
+  for (const key of ["clientId", "guildId", "salesChannelId", "panelChannelId", "logChannelId", "ticketLogChannelId", "validationCategoryId", "staffRoleId", "botRoleId", "verifyChannelId", "userRoleId", "roleAdmiroId", "roleParceiroId", "roleClientesId", "roleDevId", "ticketCategoryId", "ticketPanelChannelId"]) {
     if (numericConfig(saved[key])) merged[key] = numericConfig(saved[key]);
   }
   if (!merged.panelChannelId) merged.panelChannelId = merged.salesChannelId;
@@ -2206,6 +2412,8 @@ function getPublicDiscordStatus(config = getDiscordConfig()) {
     salesChannelId: config.salesChannelId || null,
     panelChannelId: config.panelChannelId || null,
     logChannelId: config.logChannelId || null,
+    ticketLogChannelId: config.ticketLogChannelId || null,
+    ticketLogChannelConfigured: Boolean(config.ticketLogChannelId),
     validationCategoryConfigured: Boolean(config.validationCategoryId),
     staffRoleConfigured: Boolean(config.staffRoleId),
     botRoleConfigured: Boolean(config.botRoleId),
@@ -2233,7 +2441,7 @@ function getPublicDiscordStatus(config = getDiscordConfig()) {
 
 function discordConfigPayload(req) {
   const body = req.body || {};
-  const allowed = ["clientId", "guildId", "salesChannelId", "panelChannelId", "logChannelId", "validationCategoryId", "staffRoleId", "botRoleId", "verifyChannelId", "userRoleId", "roleAdmiroId", "roleParceiroId", "roleClientesId", "roleDevId", "ticketCategoryId", "ticketPanelChannelId"];
+  const allowed = ["clientId", "guildId", "salesChannelId", "panelChannelId", "logChannelId", "ticketLogChannelId", "validationCategoryId", "staffRoleId", "botRoleId", "verifyChannelId", "userRoleId", "roleAdmiroId", "roleParceiroId", "roleClientesId", "roleDevId", "ticketCategoryId", "ticketPanelChannelId"];
   const invalid = Object.entries(body).filter(([key, value]) => value && allowed.includes(key) && !numericConfig(value));
   if (invalid.length) {
     const err = new Error(`IDs inválidos: ${invalid.map(([key]) => key).join(", ")}.`);
@@ -2380,7 +2588,7 @@ app.post("/discord/templates/send-panel", auth, async (req, res, next) => {
     const payload = templateToDiscordPayload(template, { db: req.db });
     payload.components = [{
       type: 1,
-      components: [{ type: 2, style: 3, custom_id: "upsystem_donate_start", label: template.buttonLabel || "💠 DOAR" }]
+      components: buildPaymentMethodRow().components
     }];
     const sent = await sendDiscordChannelPayload(channelId, payload);
     saveDiscordPanelMeta(req.db, "donation", sent, channelId, templateId, req.user);
@@ -2425,7 +2633,7 @@ app.post("/discord/templates/update-donation-panel", auth, async (req, res, next
     const payload = templateToDiscordPayload(template, { db: req.db });
     payload.components = [{
       type: 1,
-      components: [{ type: 2, style: 3, custom_id: "upsystem_donate_start", label: template.buttonLabel || "💠 DOAR" }]
+      components: buildPaymentMethodRow().components
     }];
     const edited = await editDiscordMessagePayload(channelId, messageId, payload);
     saveDiscordPanelMeta(req.db, "donation", { message: { id: messageId } }, channelId, "donation_panel", req.user);
@@ -2724,29 +2932,52 @@ async function startDiscordBot() {
           await logDiscordEvent(`ℹ️ Usuário já verificado tentou verificar novamente: <@${interaction.user.id}>.`);
           return interaction.reply({ content: "Você já está verificado.", ephemeral: true });
         }
-        const a = Math.floor(Math.random() * 8) + 2;
-        const b = Math.floor(Math.random() * 8) + 2;
-        const modal = new ModalBuilder().setCustomId(`upsystem_verify_captcha:${a + b}`).setTitle("Verificação anti-robô");
-        const answerInput = new TextInputBuilder().setCustomId("captcha_answer").setLabel(`Quanto é ${a} + ${b}?`).setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(4);
+        const code = randomCaptchaCode(5);
+        verifyCaptchaChallenges.set(interaction.user.id, { code, guildId: interaction.guildId, createdAt: Date.now(), expiresAt: Date.now() + 2 * 60 * 1000, attempts: 0 });
+        const payload = buildCaptchaPromptPayload(interaction.user.id, code);
+        await logDiscordEvent(`🛡️ Captcha anti-robô gerado. Usuário: <@${interaction.user.id}> · Expira em 2 minutos.`).catch(() => null);
+        return interaction.reply({ ...payload, ephemeral: true });
+      }
+
+      if (interaction.isButton() && interaction.customId === "upsystem_verify_captcha_answer") {
+        const challenge = verifyCaptchaChallenges.get(interaction.user.id);
+        if (!challenge || Date.now() > challenge.expiresAt) {
+          verifyCaptchaChallenges.delete(interaction.user.id);
+          await logDiscordEvent(`⛔ Captcha expirado. Usuário: <@${interaction.user.id}>.`).catch(() => null);
+          return interaction.reply({ content: "Seu captcha expirou. Clique novamente em VERIFICAR para gerar um novo desafio.", ephemeral: true });
+        }
+        const modal = new ModalBuilder().setCustomId("upsystem_verify_captcha_submit").setTitle("Verificação anti-robô");
+        const answerInput = new TextInputBuilder().setCustomId("captcha_answer").setLabel("Digite o código da imagem").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(8);
         modal.addComponents(new ActionRowBuilder().addComponents(answerInput));
-        await logDiscordEvent(`🛡️ Captcha de verificação gerado. Usuário: <@${interaction.user.id}>.`).catch(() => null);
         return interaction.showModal(modal);
       }
 
-      if (interaction.isModalSubmit() && String(interaction.customId || "").startsWith("upsystem_verify_captcha:")) {
-        await interaction.deferReply({ ephemeral: true });
-        const expected = Number(String(interaction.customId).split(":")[1]);
-        const answer = Number(String(interaction.fields.getTextInputValue("captcha_answer") || "").trim().replace(",", "."));
+      if (interaction.isModalSubmit() && interaction.customId === "upsystem_verify_captcha_submit") {
         const config = getDiscordConfig(await readDb().catch(() => null));
-        const member = interaction.member || await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
-        if (!member || !config.userRoleId) return interaction.editReply({ content: "Não foi possível concluir a verificação. Avise um administrador." });
-        if (answer !== expected) {
-          await logDiscordEvent(`⛔ Captcha de verificação falhou. Usuário: <@${interaction.user.id}>.`).catch(() => null);
-          return interaction.editReply({ content: "Captcha incorreto. Clique em VERIFICAR e tente novamente." });
+        const challenge = verifyCaptchaChallenges.get(interaction.user.id);
+        if (!challenge || Date.now() > challenge.expiresAt) {
+          verifyCaptchaChallenges.delete(interaction.user.id);
+          await logDiscordEvent(`⛔ Captcha expirado. Usuário: <@${interaction.user.id}>.`).catch(() => null);
+          return interaction.reply({ content: "Captcha expirado. Clique novamente em VERIFICAR.", ephemeral: true });
         }
+        const answer = String(interaction.fields.getTextInputValue("captcha_answer") || "").trim().toUpperCase().replace(/\s+/g, "");
+        challenge.attempts += 1;
+        if (answer !== challenge.code) {
+          if (challenge.attempts >= 3) verifyCaptchaChallenges.delete(interaction.user.id);
+          await logDiscordEvent(`⛔ Captcha falhou. Usuário: <@${interaction.user.id}> · Tentativa: ${challenge.attempts}/3.`).catch(() => null);
+          return interaction.reply({ content: challenge.attempts >= 3 ? "Captcha incorreto. Limite de tentativas atingido. Clique em VERIFICAR para gerar outro." : "Código incorreto. Tente novamente clicando em RESPONDER CAPTCHA.", ephemeral: true });
+        }
+        const member = interaction.member || await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
+        if (!member) return interaction.reply({ content: "Não foi possível localizar seu membro no servidor.", ephemeral: true });
         await member.roles.add(config.userRoleId, "UpSysteM verificação por captcha aprovado");
+        verifyCaptchaChallenges.delete(interaction.user.id);
         await logDiscordEvent(`✅ Captcha aprovado e usuário verificado: <@${interaction.user.id}> recebeu o cargo user.`).catch(() => null);
-        return interaction.editReply({ content: "Verificação concluída. Você já pode usar o painel de doação." });
+        return interaction.reply({ content: "Verificação concluída. Você já pode usar o painel de doação.", ephemeral: true });
+      }
+
+      if (interaction.isButton() && interaction.customId === "upsystem_paypal_soon") {
+        await logDiscordEvent(`🔵 PayPal clicado. Usuário: <@${interaction.user.id}> · Canal: <#${interaction.channelId}> · Status: disponível em breve`).catch(() => null);
+        return interaction.reply({ content: "PayPal estará disponível em breve.", ephemeral: true });
       }
 
       if (interaction.isButton() && interaction.customId === "upsystem_donate_start") {
@@ -2760,7 +2991,7 @@ async function startDiscordBot() {
             return interaction.reply({ content: `Você precisa se verificar antes de doar.${where}`, ephemeral: true });
           }
         }
-        await logDiscordEvent(`💠 Botão DOAR clicado. Usuário: <@${interaction.user.id}> · Canal: <#${interaction.channelId}>`);
+        await logDiscordEvent(`💳 Botão Mercado Pago clicado. Usuário: <@${interaction.user.id}> · Canal: <#${interaction.channelId}>`);
         return interaction.reply({ content: "Selecione seu plano de doação:", components: [donationPlanSelectRow()], ephemeral: true });
       }
 
@@ -2920,7 +3151,7 @@ ${order.pixTicketUrl}`, ephemeral: true });
             order.paymentUrl = transactionData.ticket_url || null;
           } else {
             order.paymentStatus = "test_pending";
-            order.pixQrCode = "PIX_TESTE_UPSYSTEM_V1_1_10_CONFIGURE_MERCADOPAGO_ACCESS_TOKEN";
+            order.pixQrCode = "PIX_TESTE_UPSYSTEM_V1_1_13_CONFIGURE_MERCADOPAGO_ACCESS_TOKEN";
             order.pixTicketUrl = null;
             order.paymentUrl = null;
             order.note = "Fluxo Discord testado sem Mercado Pago ativo. Configure Mercado Pago para Pix real e confirmação automática.";
@@ -2982,7 +3213,7 @@ ${order.pixTicketUrl}`, ephemeral: true });
         db.meta.discordTickets = Array.isArray(db.meta.discordTickets) ? [ticket, ...db.meta.discordTickets].slice(0, 200) : [ticket];
         await writeDb(db);
         await sendDiscordChannelPayload(ticketChannel.id, buildTicketRoomPayload(ticket));
-        await logDiscordEvent(`🎫 Ticket aberto: #${number} · Usuário: <@${interaction.user.id}> · Canal: <#${ticketChannel.id}>`).catch(() => null);
+        await logDiscordTicketEvent(`Ticket aberto: #${number} · Usuário: <@${interaction.user.id}> · Canal: <#${ticketChannel.id}>`).catch(() => null);
         return interaction.editReply({ content: `Ticket criado: <#${ticketChannel.id}>` });
       }
 
@@ -2998,33 +3229,27 @@ ${order.pixTicketUrl}`, ephemeral: true });
         const channel = interaction.channel;
         const fetched = await channel.messages.fetch({ limit: 100 }).catch(() => null);
         const messages = fetched ? Array.from(fetched.values()).sort((a,b) => a.createdTimestamp - b.createdTimestamp) : [];
-        const transcriptLines = [
-          `UpSysteM - Transcript Ticket #${ticket.number}`,
-          `Canal: ${channel?.name || interaction.channelId}`,
-          `Usuário: ${ticket.username || "-"} (${ticket.userId || "-"})`,
-          `Aberto em: ${ticket.createdAt || "-"}`,
-          `Fechado em: ${nowIso()}`,
-          `Fechado por: ${interaction.user.username} (${interaction.user.id})`,
-          "",
-          "--- Conversa ---",
-          ...messages.map((msg) => `[${new Date(msg.createdTimestamp).toISOString()}] ${msg.author?.tag || msg.author?.username || msg.author?.id}: ${String(msg.content || "[anexo/embed]").replace(/\n/g, " ")}`)
-        ];
-        const transcriptBuffer = Buffer.from(transcriptLines.join("\n"), "utf8");
+        ticket.status = "closed";
+        ticket.closedAt = nowIso();
+        ticket.closedBy = interaction.user.id;
+        const transcriptText = buildTicketTranscriptText(ticket, interaction, channel, messages);
+        const transcriptBuffer = Buffer.from(transcriptText, "utf8");
         const filename = `upsystem-ticket-${ticket.number}.txt`;
+        const logoPath = discordAssetPath(DISCORD_LOGO_FILE);
+        const logoAttachment = () => logoPath ? new AttachmentBuilder(logoPath, { name: DISCORD_LOGO_FILE }) : null;
+        const attachmentForDm = () => [logoAttachment(), new AttachmentBuilder(transcriptBuffer, { name: filename })].filter(Boolean);
+        const attachmentForLog = () => [logoAttachment(), new AttachmentBuilder(transcriptBuffer, { name: filename })].filter(Boolean);
         if (ticket.userId) {
           const user = await interaction.client.users.fetch(ticket.userId).catch(() => null);
-          if (user) await user.send({ content: `🎫 Seu ticket UpSysteM #${ticket.number} foi fechado. Transcript em anexo.`, files: [new AttachmentBuilder(transcriptBuffer, { name: filename })] }).catch((error) => logDiscordEvent(`⚠️ Falha ao enviar transcript por DM. Ticket #${ticket.number} · Erro: ${error.message || "sem detalhe"}`).catch(() => null));
+          if (user) {
+            await user.send({ embeds: [buildTicketDmClosedEmbed(ticket)], files: attachmentForDm() }).catch((error) => logDiscordTicketEvent(`Falha ao enviar transcript por DM. Ticket #${ticket.number} · Erro: ${error.message || "sem detalhe"}`).catch(() => null));
+          }
         }
-        const logChannel = config.logChannelId ? await interaction.client.channels.fetch(config.logChannelId).catch(() => null) : null;
-        if (logChannel) await logChannel.send({ content: `🎫 Ticket fechado #${ticket.number}
-Usuário: ${ticket.userId ? `<@${ticket.userId}>` : "-"}
-Fechado por: <@${interaction.user.id}>`, files: [new AttachmentBuilder(transcriptBuffer, { name: filename })] }).catch(() => null);
-        ticket.status = "closed"; ticket.closedAt = nowIso(); ticket.closedBy = interaction.user.id;
+        await logDiscordTicketEvent(`Ticket fechado #${ticket.number} · Usuário: ${ticket.userId ? `<@${ticket.userId}>` : "-"} · Fechado por: <@${interaction.user.id}>`, [buildTicketClosedEmbed(ticket, interaction, channel)], attachmentForLog()).catch(() => null);
         db.meta.discordTickets = tickets.map((item) => item.channelId === interaction.channelId ? ticket : item);
         await writeDb(db);
         await interaction.editReply({ content: "Ticket fechado. Transcript registrado. A sala será excluída." }).catch(() => null);
-        await logDiscordEvent(`✅ Ticket fechado #${ticket.number}. Canal será excluído: ${interaction.channelId}`).catch(() => null);
-        setTimeout(() => channel.delete("Ticket UpSysteM fechado").catch(() => null), 3000).unref?.();
+        setTimeout(() => channel.delete("Ticket UpSysteM fechado").catch((error) => logDiscordTicketEvent(`Falha ao excluir sala do ticket #${ticket.number}: ${error.message || "sem detalhe"}`).catch(() => null)), 3000).unref?.();
         return;
       }
 
@@ -3098,7 +3323,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.1.12",
+    version: "1.1.13",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
