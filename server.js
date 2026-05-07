@@ -327,7 +327,7 @@ function compareVersion(a = "0.0.0", b = "0.0.0") {
 }
 
 function clientSecurity(req, res, next) {
-  res.setHeader("X-UpSystem-API", "1.1.10");
+  res.setHeader("X-UpSystem-API", "1.1.11");
 
   if (req.method === "OPTIONS" || req.path === "/health") {
     return next();
@@ -363,7 +363,7 @@ app.use(clientSecurity);
 app.get("/health", async (req, res, next) => {
   try {
     await healthDb();
-    res.json({ ok: true, service: "UpSysteM API", version: "1.1.10", database: "postgresql" });
+    res.json({ ok: true, service: "UpSysteM API", version: "1.1.11", database: "postgresql" });
   } catch (error) {
     next(error);
   }
@@ -1042,7 +1042,7 @@ async function sendDiscordDm(userId, content) {
 
 
 function defaultDiscordTemplates() {
-  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "1.1.10";
+  const version = process.env.UPSYSTEM_PUBLIC_VERSION || process.env.MIN_EXTENSION_VERSION || "1.1.11";
   return [
     { id: "donation_panel", name: "Painel de doação", buttonLabel: "💠 DOAR", title: "Painel de doação UpSysteM", description: "Escolha um plano de doação e abra sua sala de validação.", body: `🧩 Extensão UpSysteM
 {status}
@@ -1289,7 +1289,7 @@ function buildTicketRoomPayload(ticket) {
   };
 }
 
-function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.10"; }
+function extensionVersionLabel() { return process.env.UPSYSTEM_PUBLIC_VERSION || "1.1.11"; }
 
 function getExtensionRuntimeStatus(db = null) {
   const meta = db?.meta && typeof db.meta === "object" ? db.meta : {};
@@ -1505,11 +1505,44 @@ function scheduleDiscordChannelDeletion(channelId, seconds = 30, reason = "") {
   }, delay).unref?.();
 }
 
+function classifyDiscordLog(message = "") {
+  const text = String(message || "");
+  if (/captcha|verific/i.test(text) || text.startsWith("🛡️") || text.startsWith("✅ Captcha") || text.startsWith("⛔ Captcha")) return { title: "Verificação", icon: "🛡️", color: 0x22c55e };
+  if (/ticket|transcript|suporte/i.test(text) || text.startsWith("🎫")) return { title: "Suporte Key", icon: "🎫", color: 0x3b82f6 };
+  if (/heartbeat|online|offline|status calculado/i.test(text) || text.startsWith("💓")) return { title: "Status / Heartbeat", icon: "💓", color: 0x06b6d4 };
+  if (/key|DM|entregue/i.test(text) || text.startsWith("🔑")) return { title: "Key / Entrega", icon: "🔑", color: 0xf59e0b };
+  if (/erro|falha|Missing|Mercado Pago/i.test(text) || text.startsWith("❌") || text.startsWith("⚠️")) return { title: "Erro / Atenção", icon: "⚠️", color: 0xef4444 };
+  if (/doaç|plano|QR Code|Pix|sala de validação|cancelad/i.test(text) || /💠|🛒|🟡|💸|🔗|📋|🧹/.test(text)) return { title: "Doação", icon: "💠", color: 0x7c3aed };
+  return { title: "Log Discord", icon: "📌", color: 0x7c3aed };
+}
+
+function buildDiscordLogEmbed(message = "") {
+  const info = classifyDiscordLog(message);
+  const clean = truncateDiscordText(String(message || "-").replace(/^([\p{Emoji_Presentation}\p{Extended_Pictographic}]|[✅❌⚠️📌💠🛒🟡💸🔗📋🧹🎫🛡️💓🔑])\s*/u, ""), 900);
+  const now = formatDateTimeBR(nowIso());
+  return {
+    author: { name: "UpSysteM Logs", icon_url: `attachment://${DISCORD_LOGO_FILE}` },
+    title: `${info.icon} ${info.title}`,
+    color: info.color,
+    fields: [
+      { name: "Resumo", value: clean || "-", inline: false },
+      { name: "Horário", value: now, inline: true }
+    ],
+    footer: { text: "UpSysteM • Logs" },
+    thumbnail: { url: `attachment://${DISCORD_LOGO_FILE}` }
+  };
+}
+
 async function logDiscordEvent(message, embeds = []) {
   const config = getDiscordConfig();
   if (!config.logChannelId) return { ok: false, skipped: true, reason: "missing_log_channel" };
-  try { return await sendDiscordChannelMessage(config.logChannelId, message, embeds); }
-  catch (error) { await appendSystemLog({ level: "warning", origin: "api.discord.log", message: error.message || "Falha ao enviar log Discord.", context: { logChannelId: config.logChannelId, status: error.status || null } }).catch(() => null); return { ok: false, error: error.message }; }
+  const finalEmbeds = Array.isArray(embeds) && embeds.length ? embeds : [buildDiscordLogEmbed(message)];
+  const payload = { content: "", embeds: finalEmbeds, assetFiles: [DISCORD_LOGO_FILE] };
+  try { return await sendDiscordChannelPayload(config.logChannelId, payload); }
+  catch (error) {
+    try { return await sendDiscordChannelMessage(config.logChannelId, truncateDiscordText(message, 1800)); }
+    catch (_) { await appendSystemLog({ level: "warning", origin: "api.discord.log", message: error.message || "Falha ao enviar log Discord.", context: { logChannelId: config.logChannelId, status: error.status || null } }).catch(() => null); return { ok: false, error: error.message }; }
+  }
 }
 
 function discordSafeName(value) {
@@ -1568,11 +1601,11 @@ function buildValidationRoomPayload(order, db = null) {
         { name: "Status da extensão", value: `${runtime.icon} ${runtime.label} • v${runtime.version}`, inline: false },
         { name: "Status da doação", value: "Aguardando dados do doador", inline: false }
       ],
-      footer: { text: "Clique em GERAR DOAÇÃO para abrir o formulário e continuar." }
+      footer: { text: "Clique em GERAR QR CODE para abrir o formulário ou cancele a doação se quiser encerrar." }
     }],
     components: [{
       type: 1,
-      components: [{ type: 2, style: 1, custom_id: "upsystem_generate_donation", label: "💠 GERAR DOAÇÃO" }]
+      components: [{ type: 2, style: 1, custom_id: "upsystem_generate_donation", label: "💠 GERAR QR CODE" }, { type: 2, style: 4, custom_id: "upsystem_cancel_donation", label: "CANCELAR DOAÇÃO" }]
     }],
     assetFiles: [DISCORD_LOGO_FILE, DISCORD_DONATION_BANNER_FILE]
   };
@@ -2794,6 +2827,25 @@ async function startDiscordBot() {
         return;
       }
 
+      if (interaction.isButton() && interaction.customId === "upsystem_cancel_donation") {
+        await interaction.deferReply({ ephemeral: true });
+        const db = await readDb();
+        const order = findLatestDiscordOrderForChannel(db, interaction.channelId, interaction.user.id);
+        if (order) {
+          order.status = "doacao_cancelada_usuario";
+          order.donationStatus = "doacao_cancelada_usuario";
+          order.cancelReason = "Cancelada pelo usuário antes da geração do QR Code.";
+          order.canceledAt = nowIso();
+          order.updatedAt = nowIso();
+          await writeDb(db);
+        }
+        await logDiscordEvent(`🚫 Doação cancelada pelo usuário. Usuário: <@${interaction.user.id}> · Canal: <#${interaction.channelId}> · Doação: ${order?.id || "sem-registro"}`).catch(() => null);
+        await interaction.editReply({ content: "Doação cancelada. Esta sala será encerrada." }).catch(() => null);
+        const channel = interaction.channel;
+        setTimeout(() => channel?.delete("Doação UpSysteM cancelada pelo usuário").catch((error) => logDiscordEvent(`⚠️ Falha ao excluir sala cancelada <#${interaction.channelId}>: ${error.message || "sem detalhe"}`).catch(() => null)), 2500).unref?.();
+        return;
+      }
+
       if (interaction.isButton() && interaction.customId === "upsystem_generate_donation") {
         const db = await readDb();
         const order = findLatestDiscordOrderForChannel(db, interaction.channelId, interaction.user.id);
@@ -3046,7 +3098,7 @@ app.get("/backup/export", auth, (req, res) => {
   res.json({
     exportedAt: nowIso(),
     source: "upsystem-api",
-    version: "1.1.10",
+    version: "1.1.11",
     users: req.db.users || [],
     activationKeys: req.db.activationKeys || [],
     sites: req.db.sites || [],
