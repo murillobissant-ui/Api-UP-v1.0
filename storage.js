@@ -261,17 +261,37 @@ async function ensureSchema() {
 async function ensureInitialData() {
   const db = getPool();
 
-  const adminCount = await db.query("SELECT COUNT(*)::int AS count FROM upsystem_users");
-  if (adminCount.rows[0].count === 0) {
-    const username = process.env.ADMIN_USERNAME || "admiro";
-    const password = process.env.ADMIN_PASSWORD || "P4bl0_mur1l0";
+  const adminUsernameFromEnv = String(process.env.ADMIN_USERNAME || "").trim();
+  const adminPasswordFromEnv = String(process.env.ADMIN_PASSWORD || "").trim();
 
+  const adminResult = await db.query(
+    "SELECT id, username, data FROM upsystem_users WHERE id = $1 OR data->>'role' = 'adm' ORDER BY CASE WHEN id = $1 THEN 0 ELSE 1 END LIMIT 1",
+    ["admin-root"]
+  );
+  const existingAdmin = adminResult.rows[0]?.data || null;
+
+  const username = adminUsernameFromEnv || existingAdmin?.username || "admiro";
+  const password = adminPasswordFromEnv || (!existingAdmin ? "troque-essa-senha" : null);
+  const now = nowIso();
+  let passwordChanged = false;
+
+  if (existingAdmin && adminPasswordFromEnv) {
+    const currentHash = String(existingAdmin.passwordHash || "");
+    passwordChanged = !currentHash || !(await bcrypt.compare(adminPasswordFromEnv, currentHash));
+  }
+
+  const usernameChanged = existingAdmin && String(existingAdmin.username || "").toLowerCase() !== String(username).toLowerCase();
+  const mustSyncAdmin = !existingAdmin || usernameChanged || passwordChanged || existingAdmin.id !== "admin-root" || existingAdmin.role !== "adm";
+
+  if (mustSyncAdmin) {
+    const sessionVersion = (Number(existingAdmin?.sessionVersion || 0) || 0) + ((usernameChanged || passwordChanged) ? 1 : 0);
     const admin = {
+      ...(existingAdmin || {}),
       id: "admin-root",
-      name: "Administrador",
+      name: existingAdmin?.name || "Administrador",
       username,
-      email: "",
-      passwordHash: await bcrypt.hash(password, 10),
+      email: existingAdmin?.email || "",
+      passwordHash: password ? await bcrypt.hash(password, 10) : existingAdmin?.passwordHash,
       role: "adm",
       accessType: "lifetime",
       expiresAt: null,
@@ -280,8 +300,11 @@ async function ensureInitialData() {
       accountLimit: null,
       createdBy: null,
       activeKey: null,
-      createdAt: nowIso(),
-      updatedAt: nowIso()
+      sessionVersion,
+      credentialsSource: "render-env",
+      credentialsSyncedAt: now,
+      createdAt: existingAdmin?.createdAt || now,
+      updatedAt: now
     };
 
     await db.query(

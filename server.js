@@ -83,7 +83,7 @@ app.use(cors({ origin: CORS_ORIGIN === "*" ? true : CORS_ORIGIN, credentials: tr
 app.use(express.json({ limit: "1mb" }));
 
 function sign(user) {
-  return jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: "7d" });
+  return jwt.sign({ id: user.id, username: user.username, role: user.role, sessionVersion: user.sessionVersion || 0 }, JWT_SECRET, { expiresIn: "7d" });
 }
 
 async function auth(req, res, next) {
@@ -97,6 +97,10 @@ async function auth(req, res, next) {
     const user = db.users.find((u) => u.id === payload.id);
 
     if (!user) return res.status(401).json({ error: "Usuário inválido." });
+
+    if ((user.sessionVersion || 0) !== (payload.sessionVersion || 0)) {
+      return res.status(401).json({ error: "Sessão expirada. Faça login novamente." });
+    }
 
     if (isExpired(user)) {
       user.isActive = false;
