@@ -1,32 +1,107 @@
-# UpSysteM API v1.1.3 — PostgreSQL/Supabase
+# UpSysteM API v2.1.0 BUILD003
 
-Esta API usa PostgreSQL/Supabase via `DATABASE_URL` e centraliza a validação da extensão, usuários, keys, sites e logs.
+API online oficial do projeto UpSysteM, usada pelo Console DEV, pela extensão e pelas integrações Discord/Mercado Pago.
 
-## Variáveis no Render
+Esta versão usa o BUILD obrigatório:
 
-```txt
+```env
+REQUIRED_EXTENSION_BUILD=upsystem-v1-cleanbase-003
+```
+
+## Estado da versão
+
+- Versão pública/API: `2.1.0`
+- Build obrigatório: `BUILD003`
+- Base funcional: v2.0.39 atualizada
+- Console DEV: online via API/Render
+- Admin local/fallback `admin/admin123`: removido
+- Discord.js: evento `clientReady`
+- Dados de computador/vínculo: ocultos por padrão no Console
+
+## Autenticação Admin centralizada no Render
+
+O login administrativo principal é controlado pelas variáveis do Render:
+
+```env
+ADMIN_USERNAME=seu_admin
+ADMIN_PASSWORD=sua_senha_segura
+```
+
+Ao alterar essas variáveis no Render e executar redeploy/restart, a API sincroniza o usuário `admin-root` com os novos dados.
+
+Regras:
+
+- o Render/API é a fonte única do Admin;
+- não usar credencial fixa local;
+- não usar fallback `admin/admin123`;
+- sessões antigas podem expirar quando usuário/senha forem alterados;
+- variantes DEV/USUARIO/PARCEIRO devem consultar a API, quando aplicável.
+
+## Variáveis principais no Render
+
+```env
 PORT=10000
 JWT_SECRET=troque-por-uma-chave-grande-e-secreta
 ADMIN_USERNAME=admiro
 ADMIN_PASSWORD=troque-essa-senha
 CORS_ORIGIN=*
 DATABASE_URL=postgresql://postgres.SEUPROJETO:SUA_SENHA@aws-1-us-west-2.pooler.supabase.com:6543/postgres
-MIN_EXTENSION_VERSION=1.1.3
+MIN_EXTENSION_VERSION=2.1.0
 REQUIRED_EXTENSION_BUILD=upsystem-v1-cleanbase-003
+UPSYSTEM_PUBLIC_VERSION=2.1.0
+UPSYSTEM_EXTENSION_ONLINE_WINDOW_MINUTES=30
+UPSYSTEM_EXTENSION_HEARTBEAT_INTERVAL_MINUTES=30
 MAX_LOGS=500
 LOG_RETENTION_DAYS=7
+MAX_SYSTEM_LOGS=100
+SYSTEM_LOG_RETENTION_DAYS=7
 ```
 
-## Logs
+## Discord
 
-A partir da v1.1.2, a API mantém as logs sob duas regras simultâneas:
+```env
+DISCORD_ENABLED=true
+DISCORD_LOG_CHANNEL_ID=1501406205845835796
+DISCORD_TICKET_LOG_CHANNEL_ID=1501759453199073400
+DISCORD_VERIFY_CHANNEL_ID=1501417052638937240
+DISCORD_ROLE_USER_ID=1501475029416677417
+DISCORD_ROLE_CLIENTES_ID=1501465629264318484
+DISCORD_BOT_ROLE_ID=1501405803301572741
+DISCORD_ROLE_DEV_ID=1501465600600444998
+DISCORD_ROLE_ADMIRO_ID=1501474309124919459
+DISCORD_ROLE_PARCEIRO_ID=1501465651842121809
+DISCORD_TICKET_CATEGORY_ID=1501405325201248326
+DISCORD_TICKET_PANEL_CHANNEL_ID=
+DISCORD_SUPPORT_URL=https://discord.gg/seu-convite
+```
 
-- no máximo `MAX_LOGS` registros, padrão `500`;
-- retenção máxima de `LOG_RETENTION_DAYS` dias, padrão `7`.
+O bot deve usar `clientReady` no Discord.js para evitar o aviso de depreciação do evento `ready`.
 
-Quando novas logs são gravadas, a API remove automaticamente as logs antigas e mantém apenas as mais recentes dentro desses limites.
+## Doação / Mercado Pago
 
-`DATA_FILE` não é mais usado nesta versão.
+```env
+MERCADOPAGO_ENABLED=true
+MERCADOPAGO_MODE=production
+MERCADOPAGO_NOTIFICATION_URL=https://api-up-v1-0.onrender.com/webhooks/mercadopago?source_news=webhooks
+PAYPAL_ENABLED=false
+UPSYSTEM_DONATION_POLL_INTERVAL_SECONDS=10
+UPSYSTEM_DONATION_POLL_TIMEOUT_MINUTES=5
+```
+
+Comunicação pública deve usar linguagem de doação: doação, contribuir, apoiador, plano de doação e key de acesso.
+
+## Mensagens temporárias e limpeza
+
+```env
+DISCORD_VALIDATION_DELETE_AFTER_DM_SECONDS=30
+DISCORD_VALIDATION_DELETE_AFTER_CHANNEL_KEY_MINUTES=10
+DISCORD_EPHEMERAL_SUCCESS_TTL_SECONDS=5
+DISCORD_EPHEMERAL_ERROR_TTL_SECONDS=10
+DISCORD_CAPTCHA_TTL_MINUTES=2
+DISCORD_CLEAR_FEEDBACK_TTL_SECONDS=5
+DISCORD_PAYPAL_SOON_TTL_SECONDS=8
+DISCORD_PLAN_SELECT_FEEDBACK_TTL_SECONDS=5
+```
 
 ## Comandos Render
 
@@ -38,101 +113,52 @@ Start Command: npm start
 ## Health check
 
 ```txt
-/health
+GET /health
 ```
 
-Deve retornar algo semelhante a:
+Resposta esperada:
 
 ```json
 {
   "ok": true,
   "service": "UpSysteM API",
-  "version": "1.1.3",
-  "database": "postgresql"
+  "version": "2.1.0"
 }
 ```
 
-## Logs do Sistema
-A partir da v1.1.2, os erros técnicos são separados dos ciclos operacionais.
+## Console DEV
 
-Variáveis opcionais:
+O Console DEV deve operar em escala própria de navegador normal, sem herdar tamanho de popup da extensão.
 
-```env
-MAX_SYSTEM_LOGS=100
-SYSTEM_LOG_RETENTION_DAYS=7
-```
+Regras atuais:
 
-A API cria a tabela `upsystem_system_logs` automaticamente no PostgreSQL/Supabase.
+- abas Usuários e Keys com menus `...` ocultos por padrão;
+- menus aparecem somente após clique;
+- clique fora fecha o menu;
+- dados de cliente e computador vinculado ficam ocultos por padrão;
+- botão `Renovar` renova a key a partir da data do clique conforme plano atual;
+- lista de Usuários deve manter área ampla e alinhada como a aba Keys.
 
+## Logs
 
-### Bloqueio por build da extensão
+A API mantém logs operacionais e logs do sistema com retenção controlada por quantidade e dias.
 
-Use `REQUIRED_EXTENSION_BUILD=upsystem-v1-cleanbase-003` no Render para bloquear versões antigas mesmo quando a numeração da versão for reduzida. A extensão DEV v1.1.2 envia o header `X-UpSystem-Build` em todas as chamadas online.
+- `MAX_LOGS`
+- `LOG_RETENTION_DAYS`
+- `MAX_SYSTEM_LOGS`
+- `SYSTEM_LOG_RETENTION_DAYS`
 
-## Atualização v1.1.3
+## Segurança
 
-- Exclusão em cascata controlada: ao excluir usuário pelo ADM, a API remove keys vinculadas/resgatadas por ele.
-- Reparação automática de keys órfãs: ao consultar keys, registros vinculados a usuários inexistentes são marcados como `inactive` com motivo administrativo.
-- Nova permissão interna `discord_integration`, reservada ao ADM para aba futura de Discord no Console.
+Nunca expor no chat, README público ou commit:
 
-## Discord - preparação v1.1.3 BUILD003
+- `DISCORD_BOT_TOKEN`
+- `MERCADOPAGO_ACCESS_TOKEN`
+- `MERCADOPAGO_WEBHOOK_SECRET`
+- `PAYPAL_CLIENT_SECRET`
+- qualquer token, secret, senha ou chave privada real.
 
-Variáveis esperadas no Render:
+## Observação
 
-```env
-DISCORD_ENABLED=false
-DISCORD_CLIENT_ID=1501402366828875796
-DISCORD_GUILD_ID=1501405324492673184
-DISCORD_SALES_CHANNEL_ID=1501406249877766226
-DISCORD_LOG_CHANNEL_ID=1501406205845835796
-DISCORD_BOT_TOKEN=cole-o-token-apenas-no-render
-```
-
-A rota `GET /discord/status` valida a presença das variáveis e informa o status ao Console sem exibir o token do bot.
-
-## Pagamentos - preparação Fase 1 e Fase 2 v1.1.3 BUILD003
-
-Estrutura preparada para Mercado Pago e PayPal, sem entrega automática de key nesta versão.
-
-Variáveis futuras no Render:
-
-```env
-MERCADOPAGO_ENABLED=false
-MERCADOPAGO_ACCESS_TOKEN=
-MERCADOPAGO_WEBHOOK_SECRET=
-MERCADOPAGO_MODE=production
-MERCADOPAGO_NOTIFICATION_URL=https://api-up-v1-0.onrender.com/webhooks/mercadopago
-PAYPAL_ENABLED=false
-PAYPAL_CLIENT_ID=
-PAYPAL_CLIENT_SECRET=
-PAYPAL_WEBHOOK_ID=
-PAYPAL_MODE=sandbox
-```
-
-Rotas preparadas:
-
-- `GET /payments/status`
-- `GET /discord/orders`
-- `POST /discord/orders`
-- `POST /webhooks/mercadopago`
-- `POST /webhooks/paypal`
-
-Fase 3 permanece aguardando: Stripe, Paddle e Lemon Squeezy.
-
-ATUALIZAÇÃO v1.1.3 BUILD003:
-- Corrigida restauração de último clique, próximo clique e tempo restante após fechar/deslogar/logar.
-- Cronômetro operacional agora é lido do storage persistente por usuário + site.
-- Logs operacionais repetidas são deduplicadas em janela curta para reduzir ruído.
-- Build obrigatório permanece upsystem-v1-cleanbase-003.
-
-## Atualização v1.1.3 BUILD003
-- Versão mantida no build obrigatório `upsystem-v1-cleanbase-003`.
-- Esta atualização é focada na extensão: detecção de login do VivaStreet e tratamento de mensagens durante reload.
-
-
-ATUALIZAÇÃO v1.1.3 BUILD003:
-- Console reorganizado em abas independentes: Discord, Mercado Pago e PayPal.
-- Discord passou a gerenciar bot, comandos, templates e verificação por cargo user.
-- Mercado Pago passou a concentrar geração manual de pagamento, Pix/link e lista de doações.
-- PayPal separado para status e futura automação internacional.
-- Build obrigatório permanece upsystem-v1-cleanbase-003.
+Esta v2.1.0 é uma atualização documental/versionamento sobre a base funcional v2.0.39 enviada pelo usuário.
+Código funcional preservado, salvo ajustes textuais de versão solicitados.

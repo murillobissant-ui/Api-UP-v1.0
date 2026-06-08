@@ -3059,7 +3059,7 @@ async function startDiscordBot() {
 
   discordClient = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages] });
 
-  discordClient.once("ready", () => {
+  discordClient.once("clientReady", () => {
     console.log(`Discord bot conectado como ${discordClient.user?.tag || "bot"}.`);
   });
 
